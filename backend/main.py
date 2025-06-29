@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.api import canonical_player
+from backend.routers import ingest
 
 app = FastAPI()
 
@@ -18,3 +19,4 @@ def root():
 
 # Only include the new canonical player router
 app.include_router(canonical_player.router)
+app.include_router(ingest.router)
