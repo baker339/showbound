@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, BackgroundTasks, Request, Query, HTTPException
 import subprocess
 import os
 
@@ -62,4 +62,13 @@ def debug_ml(background_tasks: BackgroundTasks):
 @router.post("/test-level-weights")
 def test_level_weights(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_script, ["python", "scripts/test_level_weights.py"])
-    return {"status": "Started test level weights"} 
+    return {"status": "Started test level weights"}
+
+@router.get("/logs/script_output")
+def get_script_output_log(lines: int = Query(100, ge=1, le=1000)):
+    log_path = "script_output.log"
+    if not os.path.exists(log_path):
+        raise HTTPException(status_code=404, detail="Log file not found")
+    with open(log_path, "r") as f:
+        all_lines = f.readlines()
+    return {"lines": all_lines[-lines:]} 
