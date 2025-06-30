@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Button, Card, CardContent, CircularProgress, FormControl, InputLabel, MenuItem, Select, Typography, Paper } from '@mui/material';
 import PlayerCard from './PlayerCard';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 interface Player {
   id: number;

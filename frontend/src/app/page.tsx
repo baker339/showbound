@@ -55,7 +55,7 @@ interface PlayerDetail {
   mlb_success_prediction?: any;
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 // Canonical columns for each stat type
 const battingColumns = [

@@ -23,7 +23,7 @@ import {
 } from '@mui/material';
 import { Player } from '@/types/player';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 interface PlayerComparison {
   player1: Player | null;
