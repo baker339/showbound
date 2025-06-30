@@ -6,7 +6,8 @@ router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 # Helper to run a script in the background
 def run_script(script_args):
-    subprocess.Popen(script_args)
+    with open("script_output.log", "a") as f:
+        subprocess.Popen(script_args, stdout=f, stderr=f)
 
 @router.post("/mlb-urls")
 def scrape_mlb_urls(background_tasks: BackgroundTasks):
