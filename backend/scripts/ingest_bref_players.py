@@ -7,9 +7,9 @@ import time
 import unicodedata
 import argparse
 from tqdm import tqdm
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backend.database import SessionLocal
-from backend.models import Player, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from database import SessionLocal
+from models import Player, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat
 
 # Mapping from Baseball Reference headers to model fields
 BREF_TO_MODEL = {

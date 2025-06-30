@@ -1,8 +1,8 @@
 import subprocess
 import sys
 import os
-from backend.database import SessionLocal
-from backend.ml_service import ml_service
+from database import SessionLocal
+from ml_service import ml_service
 
 def run_script(script_path):
     print(f"[MASTER] Running: {script_path}")

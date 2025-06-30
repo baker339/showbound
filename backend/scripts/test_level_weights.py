@@ -3,12 +3,10 @@
 import os
 import sys
 
-# Add the backend directory to the path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from backend.database import SessionLocal
-from backend.ml_service import ml_service
-from backend import models
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from database import SessionLocal
+from ml_service import ml_service
+import models
 
 def test_level_weights():
     """Test the data-driven level weight computation"""

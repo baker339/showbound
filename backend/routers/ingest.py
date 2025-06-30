@@ -46,4 +46,19 @@ def ingest_milb(background_tasks: BackgroundTasks):
 @router.post("/clear-db")
 def clear_database(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_script, ["python", "scripts/empty_database.py"])
-    return {"status": "Started clearing database"} 
+    return {"status": "Started clearing database"}
+
+@router.post("/ml-update")
+def update_ml(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_script, ["python", "scripts/master_ingest_and_ml.py"])
+    return {"status": "Started ML update"}
+
+@router.post("/debug-ml")
+def debug_ml(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_script, ["python", "scripts/debug_ml_service.py"])
+    return {"status": "Started ML debug"}
+
+@router.post("/test-level-weights")
+def test_level_weights(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_script, ["python", "scripts/test_level_weights.py"])
+    return {"status": "Started test level weights"} 
