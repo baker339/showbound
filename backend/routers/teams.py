@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from backend import crud, schemas
-from backend.database import SessionLocal
+import crud, schemas
+from database import SessionLocal
 from typing import List
-from backend.schemas import TeamShallow
+from schemas import TeamShallow
 
 def get_db():
     db = SessionLocal()

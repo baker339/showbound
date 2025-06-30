@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.api import canonical_player
-from backend.routers import ingest
+from api import canonical_player
+from routers import ingest
 
 app = FastAPI()
 
