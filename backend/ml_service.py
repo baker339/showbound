@@ -8,11 +8,11 @@ from sklearn.metrics import mean_squared_error, r2_score
 import joblib
 from typing import List, Dict, Tuple, Optional
 from sqlalchemy.orm import Session
-from backend import models
 from sqlalchemy import func
 import logging
 import datetime
 from sklearn.decomposition import PCA
+import models
 
 logger = logging.getLogger(__name__)
 
