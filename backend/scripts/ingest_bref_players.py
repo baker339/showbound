@@ -197,6 +197,9 @@ MLB_TEAM_MAP = {
     'colorado rockies': 'Rockies', 'col': 'Rockies', 'rockies': 'Rockies',
 }
 
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+HEADERS = {"User-Agent": USER_AGENT}
+
 def normalize_team(team_str):
     if not team_str:
         return None
@@ -210,7 +213,7 @@ def normalize_team(team_str):
 def get_soup(url):
     time.sleep(3)  # 3 second delay before each request
     try:
-        resp = requests.get(url)
+        resp = requests.get(url, headers=HEADERS)
         resp.raise_for_status()
         return BeautifulSoup(resp.text, 'html.parser')
     except requests.exceptions.HTTPError as e:
