@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { Box, Button, Card, CardContent, CircularProgress, FormControl, InputLabel, MenuItem, Select, Typography, Paper } from '@mui/material';
-import Unstable_Grid2 from '@mui/material/Unstable_Grid2';
 import PlayerCard from './PlayerCard';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
@@ -112,8 +111,8 @@ const PlayerCompare: React.FC = () => {
         {loading && <CircularProgress />}
         {result && (
           <Box sx={{ mt: 4 }}>
-            <Unstable_Grid2 container spacing={2}>
-              <Unstable_Grid2 xs={12} md={5}>
+            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              <Box sx={{ flex: { xs: '0 0 100%', md: '0 0 41.6667%' } }}>
                 <Paper sx={{ p: 2 }}>
                   <Typography variant="h6">{result.player1.name}</Typography>
                   <PlayerCard name={result.player1.name} ratings={{
@@ -133,14 +132,12 @@ const PlayerCompare: React.FC = () => {
                     confidence_score: result.player1.confidence ?? 0.5,
                   }} />
                 </Paper>
-              </Unstable_Grid2>
-              <Unstable_Grid2 xs={12} md={2}>
-                <Box sx={{ textAlign: 'center', mt: 6 }}>
-                  <Typography variant="h6">VS</Typography>
-                  <Typography variant="body1" sx={{ mt: 2 }}>Similarity: {Math.round(result.similarity * 100)}%</Typography>
-                </Box>
-              </Unstable_Grid2>
-              <Unstable_Grid2 xs={12} md={5}>
+              </Box>
+              <Box sx={{ flex: { xs: '0 0 100%', md: '0 0 16.6667%' }, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', mt: { xs: 2, md: 0 } }}>
+                <Typography variant="h6">VS</Typography>
+                <Typography variant="body1" sx={{ mt: 2 }}>Similarity: {Math.round(result.similarity * 100)}%</Typography>
+              </Box>
+              <Box sx={{ flex: { xs: '0 0 100%', md: '0 0 41.6667%' } }}>
                 <Paper sx={{ p: 2 }}>
                   <Typography variant="h6">{result.player2.name}</Typography>
                   <PlayerCard name={result.player2.name} ratings={{
@@ -160,8 +157,8 @@ const PlayerCompare: React.FC = () => {
                     confidence_score: result.player2.confidence ?? 0.5,
                   }} />
                 </Paper>
-              </Unstable_Grid2>
-            </Unstable_Grid2>
+              </Box>
+            </Box>
             <Box sx={{ mt: 4, p: 2, bgcolor: 'grey.100', borderRadius: 1 }}>
               <Typography variant="subtitle1">Summary</Typography>
               <Typography variant="body2">{result.summary}</Typography>
