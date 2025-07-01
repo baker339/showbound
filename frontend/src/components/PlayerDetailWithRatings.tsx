@@ -33,6 +33,7 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
   const [ratings, setRatings] = useState<PlayerRatings | TwoWayPlayerRatings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [tab, setTab] = React.useState<'batting' | 'pitching'>('batting');
 
   useEffect(() => {
     setLoading(true);
@@ -68,7 +69,6 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
   // Two-way player: render both charts in tabs
   if ((ratings as any).player_type === 'two_way') {
     const r = ratings as any;
-    const [tab, setTab] = React.useState<'batting' | 'pitching'>('batting');
     return (
       <div>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
