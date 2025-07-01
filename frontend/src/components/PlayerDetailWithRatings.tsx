@@ -3,6 +3,7 @@ import PlayerCard from './PlayerCard';
 import { mapBackendGradesToPlayerRatings } from '../lib/ratings';
 import type { PlayerRatings } from './PlayerCard';
 import { Box, Typography, Tabs, Tab } from '@mui/material';
+import PlayerTrendsChart from './PlayerTrendsChart';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -33,7 +34,7 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
   const [ratings, setRatings] = useState<PlayerRatings | TwoWayPlayerRatings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [tab, setTab] = React.useState<'batting' | 'pitching'>('batting');
+  const [tab, setTab] = React.useState<'batting' | 'pitching' | 'trends'>('batting');
 
   useEffect(() => {
     setLoading(true);
@@ -82,6 +83,7 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
         <Tabs value={tab} onChange={(_, v) => setTab(v)}>
           <Tab label="Batting" value="batting" />
           <Tab label="Pitching" value="pitching" />
+          <Tab label="Trends" value="trends" />
         </Tabs>
         <Box sx={{ mt: 2 }}>
           {tab === 'batting' && (
@@ -104,20 +106,48 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
               onCardClick={onCardClick}
             />
           )}
+          {tab === 'trends' && (
+            <PlayerTrendsChart
+              hittingHistory={r.hitting.historical_overalls}
+              pitchingHistory={r.pitching.historical_overalls}
+              playerType="two_way"
+            />
+          )}
         </Box>
       </div>
     );
   }
 
+  // One-way player: Ratings/Trends tabs
+  const [singleTab, setSingleTab] = React.useState<'ratings' | 'trends'>('ratings');
   return (
-    <PlayerCard
-      name={name}
-      position={position}
-      level={level}
-      organization={organization}
-      ratings={ratings as any}
-      onCardClick={onCardClick}
-    />
+    <div>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+        <Typography variant="h4" sx={{ fontWeight: 'bold' }}>{name}</Typography>
+      </Box>
+      <Tabs value={singleTab} onChange={(_, v) => setSingleTab(v)}>
+        <Tab label="Ratings" value="ratings" />
+        <Tab label="Trends" value="trends" />
+      </Tabs>
+      <Box sx={{ mt: 2 }}>
+        {singleTab === 'ratings' && (
+          <PlayerCard
+            name={name}
+            position={position}
+            level={level}
+            organization={organization}
+            ratings={ratings as any}
+            onCardClick={onCardClick}
+          />
+        )}
+        {singleTab === 'trends' && (
+          <PlayerTrendsChart
+            hittingHistory={(ratings as any).historical_overalls}
+            playerType={(ratings as any).player_type || 'position_player'}
+          />
+        )}
+      </Box>
+    </div>
   );
 };
 
