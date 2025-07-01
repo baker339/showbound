@@ -334,56 +334,46 @@ class BaseballMLService:
         
         return 0.5  # Default fallback
     
-    def extract_player_features(self, db: Session, player_id: int, mode: str = 'all') -> Optional[dict]:
-        """Extract feature vector for a player, split by mode: 'hitting', 'pitching', or 'all' (default)."""
+    def extract_player_features(self, db: Session, player_id: int, mode: str = 'all', season: Optional[int] = None) -> Optional[dict]:
+        """Extract feature vector for a player, split by mode: 'hitting', 'pitching', or 'all' (default). If season is provided, fetch stats for that season."""
         try:
             player = db.query(models.Player).filter(models.Player.id == player_id).first()
             if not player:
                 return None
-            
             # Get the player's level for weighting
             player_level = getattr(player, 'level', 'MLB')
             level_factor = self._get_level_factor(player_level)
-            
-            # Get latest stats from all canonical tables
-            adv_bat = db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first()
-            val_bat = db.query(models.ValueBattingStat).filter(models.ValueBattingStat.player_id == player_id).order_by(models.ValueBattingStat.season.desc()).first()
-            std_bat = db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first()
-            adv_pit = db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first()
-            val_pit = db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first()
-            std_pit = db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first()
-            std_field = db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first()
-            
+            # Helper to fetch stat for a given model and season
+            def get_stat(model, season):
+                if season is not None:
+                    return db.query(model).filter(model.player_id == player_id, model.season == season).first()
+                else:
+                    return db.query(model).filter(model.player_id == player_id).order_by(model.season.desc()).first()
+            adv_bat = get_stat(models.AdvancedBattingStat, season)
+            val_bat = get_stat(models.ValueBattingStat, season)
+            std_bat = get_stat(models.StandardBattingStat, season)
+            adv_pit = get_stat(models.AdvancedPitchingStat, season)
+            val_pit = get_stat(models.ValuePitchingStat, season)
+            std_pit = get_stat(models.StandardPitchingStat, season)
+            std_field = get_stat(models.StandardFieldingStat, season)
             def safe_float(val):
                 try:
                     return float(val)
                 except (TypeError, ValueError):
                     return 0.0
-            
-            # Helper function to apply level weighting to stats
             def level_weighted_stat(val, is_percentage=False):
-                """Apply level weighting to a stat value"""
                 raw_val = safe_float(val)
                 if raw_val == 0:
                     return 0.0
-                
-                # For percentages (like BA, OBP, SLG), we need to be more careful
                 if is_percentage:
-                    # For percentages, we scale the difference from league average
-                    # MLB average BA is ~0.250, so we scale the difference
-                    if raw_val > 0.5:  # Likely a percentage like BA, OBP, SLG
-                        # Scale the difference from 0.250 (MLB average BA)
+                    if raw_val > 0.5:
                         diff_from_avg = raw_val - 0.250
                         weighted_diff = diff_from_avg * level_factor
                         return 0.250 + weighted_diff
                     else:
-                        # For other percentages, scale directly
                         return raw_val * level_factor
                 else:
-                    # For counting stats (HR, RBI, etc.), scale by level factor
                     return raw_val * level_factor
-            
-            # --- Feature sets with level weighting ---
             hitting_feats = [
                 level_weighted_stat(getattr(std_bat, 'ba', None), is_percentage=True),
                 level_weighted_stat(getattr(std_bat, 'obp', None), is_percentage=True),
@@ -437,15 +427,12 @@ class BaseballMLService:
                 level_weighted_stat(getattr(val_pit, 're24', None)),
                 level_weighted_stat(getattr(val_pit, 'cwpa', None)),
             ]
-            
-            # Compose feature sets
             if mode == 'hitting':
                 feats = np.array(hitting_feats + fielding_feats + [level_factor * 100, 1.0])
             elif mode == 'pitching':
                 feats = np.array(pitching_feats + fielding_feats + [level_factor * 100, 1.0])
             else:
                 feats = np.array(hitting_feats + fielding_feats + pitching_feats + [level_factor * 100, 1.0])
-            
             normed = self._normalize_features(feats)
             return {"raw": feats, "normalized": normed, "level": player_level, "level_factor": level_factor}
         except Exception as e:
@@ -723,9 +710,6 @@ class BaseballMLService:
         return potential
 
     def _get_recent_overalls(self, db, player_id: int, mode: str, n_seasons: int = 3) -> list:
-        """
-        Fetch the last n_seasons' overall ratings for a player (batting or pitching), oldest to newest.
-        """
         if mode == 'hitting':
             stats = db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.asc()).all()
         elif mode == 'pitching':
@@ -734,8 +718,8 @@ class BaseballMLService:
             return []
         overalls = []
         for stat in stats[-n_seasons:]:
-            # For each season, extract features and calculate overall as in get_ratings
-            feats = self.extract_player_features(db, player_id, mode=mode)
+            season = getattr(stat, 'season', None)
+            feats = self.extract_player_features(db, player_id, mode=mode, season=season)
             if feats is None:
                 continue
             norm = feats["normalized"]
