@@ -688,42 +688,38 @@ class BaseballMLService:
         return float(np.mean(arr))
 
     def _get_similar_player_growth(self, db: Session, player_id: int, mode: str, k: int = 5) -> Optional[float]:
-        """
-        For a player with only one season, find similar players and compute the average growth
-        (peak overall - first overall) for those with at least 3 seasons. Return the average growth.
-        """
         similar_players = self.get_similar_players(db, player_id, k=k)
         growths = []
         for comp in similar_players:
             comp_id = comp.get('mlb_player_id')
             if not comp_id:
                 continue
-            # Get overalls for the comp player
             overalls = self._get_recent_overalls(db, comp_id, mode, n_seasons=5)
             if overalls and len(overalls) >= 3:
                 growth = max(overalls) - overalls[0]
                 if growth > 0:
                     growths.append(growth)
         if growths:
-            return float(np.mean(growths))
+            avg_growth = float(np.mean(growths))
+            print(f"[DEBUG] Similar player growths for player {player_id} ({mode}): {growths}, avg_growth={avg_growth}")
+            return avg_growth
+        print(f"[DEBUG] No similar player growth found for player {player_id} ({mode})")
         return None
 
     def _calculate_trend_potential(self, overalls: list, current_overall: float, scaling: float = 2.0, db: Optional[Session] = None, player_id: Optional[int] = None, mode: Optional[str] = None) -> float:
-        """
-        Calculate potential as current overall plus scaled trend (difference between oldest and newest overall), capped at 99.
-        If only one season, use similar player growth if possible.
-        """
+        print(f"[DEBUG] _calculate_trend_potential: player_id={player_id}, mode={mode}, overalls={overalls}, current_overall={current_overall}")
         if not overalls or len(overalls) < 2:
             trend = 0
-            # Try to use similar player growth if db, player_id, and mode are provided
             if db is not None and player_id is not None and mode is not None:
                 avg_growth = self._get_similar_player_growth(db, player_id, mode)
                 if avg_growth is not None:
                     potential = min(99, current_overall + avg_growth)
+                    print(f"[DEBUG] Only one season. Using similar player avg_growth={avg_growth}. potential={potential}")
                     return potential
         else:
             trend = overalls[-1] - overalls[0]
         potential = min(99, current_overall + scaling * trend)
+        print(f"[DEBUG] Trend={trend}, scaling={scaling}, potential={potential}")
         return potential
 
     def _get_recent_overalls(self, db, player_id: int, mode: str, n_seasons: int = 3) -> list:
