@@ -43,6 +43,7 @@ class Player(Base):
     __tablename__ = 'players'
     id = Column(Integer, primary_key=True)
     full_name = Column(String)
+    bref_id = Column(String, unique=True, index=True)
     birth_date = Column(String)
     debut_date = Column(String)  # MLB debut date (raw or parsed)
     primary_position = Column(String)
@@ -56,6 +57,7 @@ class Player(Base):
     level = Column(String, nullable=False, default="MLB")
     image_url = Column(String)  # URL to player image
     source_url = Column(String)
+    bio_json = Column(JSONB)
     # ... add other canonical bio fields as needed
     pitches = relationship('Pitch', back_populates='pitcher', foreign_keys='Pitch.pitcher_id')
     at_bats = relationship('AtBat', back_populates='batter', foreign_keys='AtBat.batter_id')
