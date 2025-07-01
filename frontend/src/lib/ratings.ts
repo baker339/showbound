@@ -24,13 +24,14 @@ export interface PlayerRatings {
   command_rating?: number;
   durability_rating?: number;
   leverage_rating?: number;
+  historical_overalls?: number[];
 }
 
 /**
  * Map backend grades (20-80 scale, keys: hit, power, run, arm, field, overall) to PlayerRatings interface.
  * Fills missing fields with reasonable defaults or backend values where possible.
  */
-export function mapBackendGradesToPlayerRatings(grades: any, extra?: { confidence?: number, potential?: number }): PlayerRatings {
+export function mapBackendGradesToPlayerRatings(grades: any, extra?: any): PlayerRatings {
   console.log('Backend grades:', grades, 'Extra:', extra);
   const mapped = {
     contact_left: grades.contact_left ?? 0,
@@ -44,10 +45,10 @@ export function mapBackendGradesToPlayerRatings(grades: any, extra?: { confidenc
     arm_accuracy: grades.arm_accuracy ?? 0,
     speed: grades.speed ?? 0,
     stealing: grades.stealing ?? 0,
-    overall_rating: grades.overall_rating ?? 0,
-    potential_rating: grades.potential_rating ?? 0,
-    confidence_score: grades.confidence_score ?? 0,
-    player_type: grades.player_type ?? undefined,
+    overall_rating: (extra && extra.overall_rating !== undefined) ? extra.overall_rating : (grades.overall_rating ?? 0),
+    potential_rating: (extra && extra.potential_rating !== undefined) ? extra.potential_rating : (grades.potential_rating ?? 0),
+    confidence_score: (extra && extra.confidence_score !== undefined) ? extra.confidence_score : (grades.confidence_score ?? 0),
+    player_type: (extra && extra.player_type !== undefined) ? extra.player_type : (grades.player_type ?? undefined),
     // Pitcher tool ratings
     k_rating: grades.k_rating ?? undefined,
     bb_rating: grades.bb_rating ?? undefined,
@@ -56,6 +57,8 @@ export function mapBackendGradesToPlayerRatings(grades: any, extra?: { confidenc
     command_rating: grades.command_rating ?? undefined,
     durability_rating: grades.durability_rating ?? undefined,
     leverage_rating: grades.leverage_rating ?? undefined,
+    // Add historical_overalls if present (for trends chart)
+    historical_overalls: grades.historical_overalls ?? (extra && extra.historical_overalls ? extra.historical_overalls : undefined),
   };
   console.log('Mapped PlayerRatings:', mapped);
   return mapped;

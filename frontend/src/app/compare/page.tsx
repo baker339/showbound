@@ -310,10 +310,11 @@ export default function ComparePage() {
                     </TableHead>
                     <TableBody>
                       {(() => {
-                        const ratings1 = comparison.player1Ratings?.grades;
-                        const ratings2 = comparison.player2Ratings?.grades;
-                        
-                        if (!ratings1 || !ratings2) {
+                        const ratings1 = comparison.player1Ratings;
+                        const ratings2 = comparison.player2Ratings;
+                        const grades1 = ratings1?.grades || ratings1?.grades || ratings1;
+                        const grades2 = ratings2?.grades || ratings2?.grades || ratings2;
+                        if (!grades1 || !grades2) {
                           return (
                             <TableRow>
                               <TableCell colSpan={3} align="center">
@@ -322,32 +323,63 @@ export default function ComparePage() {
                             </TableRow>
                           );
                         }
-
                         const ratingFields = [
-                          'contact_left', 'power_left', 'discipline', 'vision',
-                          'fielding', 'arm_strength', 'speed', 'stealing',
-                          'overall_rating', 'potential_rating'
+                          { key: 'contact_left', label: 'Contact (L)' },
+                          { key: 'power_left', label: 'Power (L)' },
+                          { key: 'discipline', label: 'Discipline' },
+                          { key: 'vision', label: 'Vision' },
+                          { key: 'fielding', label: 'Fielding' },
+                          { key: 'arm_strength', label: 'Arm Strength' },
+                          { key: 'speed', label: 'Speed' },
+                          { key: 'stealing', label: 'Stealing' },
                         ];
-
-                        return ratingFields.map((key) => (
-                          <TableRow key={key}>
-                            <TableCell><strong>{key.replace('_', ' ').toUpperCase()}</strong></TableCell>
-                            <TableCell align="center">
-                              <Chip 
-                                label={ratings1[key]?.toFixed(1) || 'N/A'} 
-                                color={getRatingColor(ratings1[key] || 0)}
-                                size="small"
-                              />
-                            </TableCell>
-                            <TableCell align="center">
-                              <Chip 
-                                label={ratings2[key]?.toFixed(1) || 'N/A'} 
-                                color={getRatingColor(ratings2[key] || 0)}
-                                size="small"
-                              />
-                            </TableCell>
-                          </TableRow>
-                        ));
+                        // Add overall and potential from top-level
+                        const summaryFields = [
+                          { key: 'overall_rating', label: 'Overall', value1: ratings1?.overall_rating, value2: ratings2?.overall_rating },
+                          { key: 'potential_rating', label: 'Potential', value1: ratings1?.potential_rating, value2: ratings2?.potential_rating },
+                        ];
+                        return (
+                          <>
+                            {ratingFields.map(({ key, label }) => (
+                              <TableRow key={key}>
+                                <TableCell><strong>{label}</strong></TableCell>
+                                <TableCell align="center">
+                                  <Chip 
+                                    label={grades1[key]?.toFixed(1) || 'N/A'} 
+                                    color={getRatingColor(grades1[key] || 0)}
+                                    size="small"
+                                  />
+                                </TableCell>
+                                <TableCell align="center">
+                                  <Chip 
+                                    label={grades2[key]?.toFixed(1) || 'N/A'} 
+                                    color={getRatingColor(grades2[key] || 0)}
+                                    size="small"
+                                  />
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                            {summaryFields.map(({ key, label, value1, value2 }) => (
+                              <TableRow key={key}>
+                                <TableCell><strong>{label}</strong></TableCell>
+                                <TableCell align="center">
+                                  <Chip 
+                                    label={value1 !== undefined ? value1.toFixed(1) : 'N/A'} 
+                                    color={getRatingColor(value1 || 0)}
+                                    size="small"
+                                  />
+                                </TableCell>
+                                <TableCell align="center">
+                                  <Chip 
+                                    label={value2 !== undefined ? value2.toFixed(1) : 'N/A'} 
+                                    color={getRatingColor(value2 || 0)}
+                                    size="small"
+                                  />
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </>
+                        );
                       })()}
                     </TableBody>
                   </Table>
