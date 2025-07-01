@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import PlayerCard from './PlayerCard';
 import { mapBackendGradesToPlayerRatings } from '../lib/ratings';
 import type { PlayerRatings } from './PlayerCard';
-import { Box, Typography } from '@mui/material';
+import { Box, Typography, Tabs, Tab } from '@mui/material';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -65,9 +65,10 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
   if (loading) return <div>Loading ratings...</div>;
   if (error || !ratings) return <div>{error || 'No ratings available.'}</div>;
 
-  // Two-way player: render both charts
+  // Two-way player: render both charts in tabs
   if ((ratings as any).player_type === 'two_way') {
     const r = ratings as any;
+    const [tab, setTab] = React.useState<'batting' | 'pitching'>('batting');
     return (
       <div>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
@@ -78,23 +79,31 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
             Overall: {Math.round(r.overall_rating)}
           </Typography>
         </Box>
-        <Box sx={{ display: 'flex', gap: 2 }}>
-          <PlayerCard
-            name={name + ' (Hitting)'}
-            position={position}
-            level={level}
-            organization={organization}
-            ratings={r.hitting}
-            onCardClick={onCardClick}
-          />
-          <PlayerCard
-            name={name + ' (Pitching)'}
-            position={position}
-            level={level}
-            organization={organization}
-            ratings={r.pitching}
-            onCardClick={onCardClick}
-          />
+        <Tabs value={tab} onChange={(_, v) => setTab(v)}>
+          <Tab label="Batting" value="batting" />
+          <Tab label="Pitching" value="pitching" />
+        </Tabs>
+        <Box sx={{ mt: 2 }}>
+          {tab === 'batting' && (
+            <PlayerCard
+              name={name + ' (Hitting)'}
+              position={position}
+              level={level}
+              organization={organization}
+              ratings={r.hitting}
+              onCardClick={onCardClick}
+            />
+          )}
+          {tab === 'pitching' && (
+            <PlayerCard
+              name={name + ' (Pitching)'}
+              position={position}
+              level={level}
+              organization={organization}
+              ratings={r.pitching}
+              onCardClick={onCardClick}
+            />
+          )}
         </Box>
       </div>
     );
