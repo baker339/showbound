@@ -749,31 +749,147 @@ class BaseballMLService:
             return {}
         ptype = self.get_player_type(player)
         def get_ratings(mode, pca_weights):
-            # ... existing code ...
+            # Define feature sets for confidence calculation
+            def safe_float(val):
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    return 0.0
+            hitting_feats = [
+                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'ba', None)),
+                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'obp', None)),
+                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'ev', None)),
+                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'hardh_pct', None)),
+                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'ld_pct', None)),
+                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'slg', None)),
+                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'iso', None)),
+                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'barrel_pct', None)),
+                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'hr', None)),
+                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'bb_pct', None)),
+                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'so_pct', None)),
+                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'bb', None)),
+                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'so', None)),
+                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'sb', None)),
+                safe_float(getattr(db.query(models.ValueBattingStat).filter(models.ValueBattingStat.player_id == player_id).order_by(models.ValueBattingStat.season.desc()).first(), 'rbaser', None)),
+            ]
+            fielding_feats = [
+                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'fld_pct', None)),
+                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'rdrs', None)),
+                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'rtot', None)),
+                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'a', None)),
+                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'dp', None)),
+            ]
+            pitching_feats = [
+                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'k_pct', None)),
+                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'bb_pct', None)),
+                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'hr_pct', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'era', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'fip', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'whip', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'era_plus', None)),
+                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'war', None)),
+                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'waa', None)),
+                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'raa', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'so', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'bb', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'ip', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'gs', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'so9', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'bb9', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'hr9', None)),
+                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'h9', None)),
+                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'babip', None)),
+                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'lob_pct', None)),
+                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'era_minus', None)),
+                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'fip_minus', None)),
+                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'xfip_minus', None)),
+                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'siera', None)),
+                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'wpa', None)),
+                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 're24', None)),
+                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'cwpa', None)),
+            ]
+            feats = self.extract_player_features(db, int(player_id), mode=mode)
+            if feats is None:
+                return {}
+            norm = feats["normalized"]
+            def pca_tool(indices):
+                vals = [float(norm[i]) for i in indices if norm[i] is not None]
+                if not vals:
+                    return 40.0
+                if pca_weights is not None:
+                    return float(np.dot(np.array(vals), np.array([pca_weights[i] for i in indices if norm[i] is not None])))
+                return float(np.mean(vals))
+            contact = pca_tool([0,1,2,3,4])
+            power = pca_tool([5,6,7,8])
+            discipline = pca_tool([9,10,11,12])
+            vision = pca_tool([9,10,0])
+            fielding = pca_tool([15,16,17]) if len(norm) > 17 else 40.0
+            arm_strength = pca_tool([18,19]) if len(norm) > 19 else 40.0
+            arm_accuracy = pca_tool([18,15]) if len(norm) > 18 else 40.0
+            speed = pca_tool([13,14]) if len(norm) > 14 else 40.0
+            stealing = pca_tool([13,14]) if len(norm) > 14 else 40.0
+            k_rating = pca_tool([0, 10, 14]) if mode == 'pitching' else None
+            bb_rating = 100 - pca_tool([1, 11, 15]) if mode == 'pitching' else None
+            gb_rating = pca_tool([19, 23]) if mode == 'pitching' else None
+            hr_rating = 100 - pca_tool([2, 16]) if mode == 'pitching' else None
+            command_rating = pca_tool([3,4,5,20,21,22,23,7,9]) if mode == 'pitching' else None
+            durability_rating = pca_tool([12,13,7]) if mode == 'pitching' else None
+            leverage_rating = pca_tool([24,25,26]) if mode == 'pitching' else None
+            ratings = {}
             if mode == 'hitting':
-                # ... existing code ...
+                tool_vals = [float(x) if x is not None else 40.0 for x in [contact, power, discipline, vision, fielding, arm_strength, arm_accuracy, speed, stealing]]
+                top_tools = sorted(tool_vals, reverse=True)[:4]
+                overall = np.mean(top_tools)
+                feats_raw = feats['raw'][:len(hitting_feats) + len(fielding_feats)]
+                n_present = np.count_nonzero([x not in (None, 0.0) for x in feats_raw])
+                confidence = n_present / len(feats_raw) if len(feats_raw) > 0 else 0.0
                 potential = self._calculate_trend_potential(
                     self._get_recent_overalls(db, player_id, 'hitting'),
                     self._scale_rating(float(overall), 40, 110)
                 )
                 ratings = {
-                    // ... existing code ...
+                    'contact_left': self._scale_rating(float(contact), 40, 110),
+                    'contact_right': self._scale_rating(float(contact), 40, 110),
+                    'power_left': self._scale_rating(float(power), 40, 120),
+                    'power_right': self._scale_rating(float(power), 40, 120),
+                    'discipline': self._scale_rating(float(discipline), 20, 100),
+                    'vision': self._scale_rating(float(vision), 20, 100),
+                    'fielding': self._scale_rating(float(fielding), 40, 100),
+                    'arm_strength': self._scale_rating(float(arm_strength), 40, 100),
+                    'arm_accuracy': self._scale_rating(float(arm_accuracy), 40, 100),
+                    'speed': self._scale_rating(float(speed), 40, 100),
+                    'stealing': self._scale_rating(float(stealing), 40, 100),
+                    'overall_rating': self._scale_rating(float(overall), 40, 110),
                     'potential_rating': potential,
-                    // ... existing code ...
+                    'confidence_score': confidence,
+                    'player_type': 'position_player',
                 }
             elif mode == 'pitching':
-                # ... existing code ...
+                tool_vals = [float(x) if x is not None else 40.0 for x in [k_rating, bb_rating, gb_rating, hr_rating, command_rating]]
+                top_tools = sorted(tool_vals, reverse=True)[:3]
+                overall = np.mean(top_tools)
+                offset = len(hitting_feats) + len(fielding_feats)
+                feats_raw = feats['raw'][offset:offset+len(pitching_feats)]
+                n_present = np.count_nonzero([x not in (None, 0.0) for x in feats_raw])
+                confidence = n_present / len(feats_raw) if len(feats_raw) > 0 else 0.0
                 potential = self._calculate_trend_potential(
                     self._get_recent_overalls(db, player_id, 'pitching'),
                     self._scale_rating(float(overall), 40, 110)
                 )
                 ratings = {
-                    // ... existing code ...
+                    'k_rating': self._scale_rating(float(k_rating) if k_rating is not None else 40.0, 40, 110),
+                    'bb_rating': self._scale_rating(float(bb_rating) if bb_rating is not None else 40.0, 40, 110),
+                    'gb_rating': self._scale_rating(float(gb_rating) if gb_rating is not None else 40.0, 40, 110),
+                    'hr_rating': self._scale_rating(float(hr_rating) if hr_rating is not None else 40.0, 40, 110),
+                    'command_rating': self._scale_rating(float(command_rating) if command_rating is not None else 40.0, 40, 110),
+                    'durability_rating': self._scale_rating(float(durability_rating) if durability_rating is not None else 40.0, 40, 110),
+                    'leverage_rating': self._scale_rating(float(leverage_rating) if leverage_rating is not None else 40.0, 40, 110),
+                    'overall_rating': self._scale_rating(float(overall), 40, 110),
                     'potential_rating': potential,
-                    // ... existing code ...
+                    'confidence_score': confidence,
+                    'player_type': 'pitcher',
                 }
             return ratings
-        # ... existing code ...
         if ptype == 'pitcher':
             return get_ratings('pitching', getattr(self, 'pca_weights_pit', None))
         elif ptype in ('position_player', 'dh'):
