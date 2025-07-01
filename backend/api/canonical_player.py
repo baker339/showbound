@@ -98,7 +98,7 @@ def get_player_ratings(player_id: int, db: Session = Depends(get_db)):
     ratings = ml_service.calculate_mlb_show_ratings(db, player_id)
     if not ratings:
         raise HTTPException(status_code=404, detail="Player or ratings not found")
-    return {"grades": ratings}
+    return ratings
 
 @router.get("/player/{player_id}/mlb_comps")
 def get_player_comparisons(player_id: int, db: Session = Depends(get_db)):
