@@ -705,6 +705,11 @@ class BaseballMLService:
                     return potential
         else:
             trend = overalls[-1] - overalls[0]
+            if trend < 0:
+                # Use max overall if trend is negative
+                potential = max(overalls + [current_overall])
+                print(f"[DEBUG] Negative trend. Using max overall. trend={trend}, potential={potential}")
+                return potential
         potential = min(99, current_overall + scaling * trend)
         print(f"[DEBUG] Trend={trend}, scaling={scaling}, potential={potential}")
         return potential
@@ -749,6 +754,50 @@ class BaseballMLService:
                 overall = 40.0
             overalls.append(self._scale_rating(float(overall), 40, 110))
         return overalls[-n_seasons:]
+
+    def _get_recent_overalls_with_seasons(self, db, player_id: int, mode: str, n_seasons: int = 5) -> list:
+        """
+        Fetch the last n_seasons' (season, overall) for a player (batting or pitching), oldest to newest.
+        """
+        if mode == 'hitting':
+            stats = db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.asc()).all()
+        elif mode == 'pitching':
+            stats = db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.asc()).all()
+        else:
+            return []
+        results = []
+        for stat in stats[-n_seasons:]:
+            season = getattr(stat, 'season', None)
+            feats = self.extract_player_features(db, player_id, mode=mode, season=season)
+            if feats is None:
+                continue
+            norm = feats["normalized"]
+            if mode == 'hitting':
+                contact = np.mean([norm[0], norm[1], norm[2], norm[3], norm[4]])
+                power = np.mean([norm[5], norm[6], norm[7], norm[8]])
+                discipline = np.mean([norm[9], norm[10], norm[11], norm[12]])
+                vision = np.mean([norm[9], norm[10], norm[0]])
+                fielding = norm[15] if len(norm) > 17 else 40.0
+                arm_strength = norm[18] if len(norm) > 19 else 40.0
+                arm_accuracy = norm[18] if len(norm) > 18 else 40.0
+                speed = norm[13] if len(norm) > 14 else 40.0
+                stealing = norm[13] if len(norm) > 14 else 40.0
+                tool_vals = [float(x) if x is not None else 40.0 for x in [contact, power, discipline, vision, fielding, arm_strength, arm_accuracy, speed, stealing]]
+                top_tools = sorted(tool_vals, reverse=True)[:4]
+                overall = np.mean(top_tools)
+            elif mode == 'pitching':
+                k_rating = norm[0] if len(norm) > 0 else 40.0
+                bb_rating = 100 - (norm[1] if len(norm) > 1 else 40.0)
+                gb_rating = norm[19] if len(norm) > 19 else 40.0
+                hr_rating = 100 - (norm[2] if len(norm) > 2 else 40.0)
+                command_rating = np.mean([norm[3], norm[4], norm[5], norm[20], norm[21], norm[22], norm[23], norm[7], norm[9]]) if len(norm) > 23 else 40.0
+                tool_vals = [float(x) if x is not None else 40.0 for x in [k_rating, bb_rating, gb_rating, hr_rating, command_rating]]
+                top_tools = sorted(tool_vals, reverse=True)[:3]
+                overall = np.mean(top_tools)
+            else:
+                overall = 40.0
+            results.append({"season": season, "overall": self._scale_rating(float(overall), 40, 110)})
+        return results[-n_seasons:]
 
     def calculate_mlb_show_ratings(self, db: Session, player_id: int) -> Dict:
         player = db.query(models.Player).filter(models.Player.id == player_id).first()
@@ -871,6 +920,7 @@ class BaseballMLService:
                     'potential_rating': potential,
                     'confidence_score': confidence,
                     'player_type': 'position_player',
+                    'historical_overalls': self._get_recent_overalls_with_seasons(db, player_id, 'hitting'),
                 }
             elif mode == 'pitching':
                 tool_vals = [float(x) if x is not None else 40.0 for x in [k_rating, bb_rating, gb_rating, hr_rating, command_rating]]
@@ -897,12 +947,31 @@ class BaseballMLService:
                     'potential_rating': potential,
                     'confidence_score': confidence,
                     'player_type': 'pitcher',
+                    'historical_overalls': self._get_recent_overalls_with_seasons(db, player_id, 'pitching'),
                 }
             return ratings
         if ptype == 'pitcher':
-            return get_ratings('pitching', getattr(self, 'pca_weights_pit', None))
+            raw = get_ratings('pitching', getattr(self, 'pca_weights_pit', None))
+            grades = {k: v for k, v in raw.items() if k not in ('overall_rating', 'potential_rating', 'confidence_score', 'player_type', 'historical_overalls')}
+            return {
+                'grades': grades,
+                'overall_rating': raw.get('overall_rating'),
+                'potential_rating': raw.get('potential_rating'),
+                'confidence_score': raw.get('confidence_score'),
+                'player_type': raw.get('player_type'),
+                'historical_overalls': raw.get('historical_overalls', []),
+            }
         elif ptype in ('position_player', 'dh'):
-            return get_ratings('hitting', getattr(self, 'pca_weights_hit', None))
+            raw = get_ratings('hitting', getattr(self, 'pca_weights_hit', None))
+            grades = {k: v for k, v in raw.items() if k not in ('overall_rating', 'potential_rating', 'confidence_score', 'player_type', 'historical_overalls')}
+            return {
+                'grades': grades,
+                'overall_rating': raw.get('overall_rating'),
+                'potential_rating': raw.get('potential_rating'),
+                'confidence_score': raw.get('confidence_score'),
+                'player_type': raw.get('player_type'),
+                'historical_overalls': raw.get('historical_overalls', []),
+            }
         elif ptype == 'two_way':
             hit = get_ratings('hitting', getattr(self, 'pca_weights_hit', None))
             pit = get_ratings('pitching', getattr(self, 'pca_weights_pit', None))
@@ -910,12 +979,20 @@ class BaseballMLService:
             pitching_potential = pit.get('potential_rating', 0)
             overall = 0.6 * max(hit.get('overall_rating', 0), pit.get('overall_rating', 0)) + 0.4 * min(hit.get('overall_rating', 0), pit.get('overall_rating', 0))
             potential = 0.6 * max(batting_potential, pitching_potential) + 0.4 * min(batting_potential, pitching_potential)
+            grades = {
+                'batting': {k: v for k, v in hit.items() if k not in ('overall_rating', 'potential_rating', 'confidence_score', 'player_type', 'historical_overalls')},
+                'pitching': {k: v for k, v in pit.items() if k not in ('overall_rating', 'potential_rating', 'confidence_score', 'player_type', 'historical_overalls')},
+            }
+            historical = {
+                'batting': hit.get('historical_overalls', []),
+                'pitching': pit.get('historical_overalls', []),
+            }
             return {
-                'hitting': hit,
-                'pitching': pit,
-                'player_type': 'two_way',
+                'grades': grades,
                 'overall_rating': overall,
-                'potential_rating': potential
+                'potential_rating': potential,
+                'player_type': 'two_way',
+                'historical_overalls': historical,
             }
         else:
             return {}
