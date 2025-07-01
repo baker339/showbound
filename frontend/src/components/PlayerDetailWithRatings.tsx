@@ -34,7 +34,7 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
   const [ratings, setRatings] = useState<PlayerRatings | TwoWayPlayerRatings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [tab, setTab] = React.useState<'batting' | 'pitching' | 'trends'>('batting');
+  const [tab, setTab] = React.useState<string>('ratings');
 
   useEffect(() => {
     setLoading(true);
@@ -63,6 +63,16 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
         setLoading(false);
       });
   }, [playerId]);
+
+  // Set default tab based on player type when ratings change
+  useEffect(() => {
+    if (!ratings) return;
+    if ((ratings as any).player_type === 'two_way') {
+      setTab('batting');
+    } else {
+      setTab('ratings');
+    }
+  }, [ratings]);
 
   if (loading) return <div>Loading ratings...</div>;
   if (error || !ratings) return <div>{error || 'No ratings available.'}</div>;
@@ -119,18 +129,17 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
   }
 
   // One-way player: Ratings/Trends tabs
-  const [singleTab, setSingleTab] = React.useState<'ratings' | 'trends'>('ratings');
   return (
     <div>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
         <Typography variant="h4" sx={{ fontWeight: 'bold' }}>{name}</Typography>
       </Box>
-      <Tabs value={singleTab} onChange={(_, v) => setSingleTab(v)}>
+      <Tabs value={tab} onChange={(_, v) => setTab(v)}>
         <Tab label="Ratings" value="ratings" />
         <Tab label="Trends" value="trends" />
       </Tabs>
       <Box sx={{ mt: 2 }}>
-        {singleTab === 'ratings' && (
+        {tab === 'ratings' && (
           <PlayerCard
             name={name}
             position={position}
@@ -140,7 +149,7 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
             onCardClick={onCardClick}
           />
         )}
-        {singleTab === 'trends' && (
+        {tab === 'trends' && (
           <PlayerTrendsChart
             hittingHistory={(ratings as any).historical_overalls}
             playerType={(ratings as any).player_type || 'position_player'}
