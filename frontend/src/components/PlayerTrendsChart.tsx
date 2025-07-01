@@ -8,27 +8,39 @@ interface HistoryEntry {
 }
 
 interface PlayerTrendsChartProps {
-  hittingHistory: HistoryEntry[];
+  hittingHistory?: HistoryEntry[];
   pitchingHistory?: HistoryEntry[];
   playerType: 'position_player' | 'pitcher' | 'two_way' | string;
 }
 
 const PlayerTrendsChart: React.FC<PlayerTrendsChartProps> = ({ hittingHistory, pitchingHistory, playerType }) => {
+  // Defensive: ensure arrays
+  const safeHitting = Array.isArray(hittingHistory) ? hittingHistory : [];
+  const safePitching = Array.isArray(pitchingHistory) ? pitchingHistory : [];
+
   // Prepare data for chart
   let chartData: any[] = [];
-  if (playerType === 'two_way' && pitchingHistory) {
+  if (playerType === 'two_way' && safePitching.length > 0) {
     // Merge by season
     const allSeasons = Array.from(new Set([
-      ...hittingHistory.map(h => h.season),
-      ...pitchingHistory.map(p => p.season),
+      ...safeHitting.map(h => h.season),
+      ...safePitching.map(p => p.season),
     ])).sort();
     chartData = allSeasons.map(season => ({
       season,
-      Hitting: hittingHistory.find(h => h.season === season)?.overall ?? null,
-      Pitching: pitchingHistory.find(p => p.season === season)?.overall ?? null,
+      Hitting: safeHitting.find(h => h.season === season)?.overall ?? null,
+      Pitching: safePitching.find(p => p.season === season)?.overall ?? null,
     }));
   } else {
-    chartData = hittingHistory.map(h => ({ season: h.season, Overall: h.overall }));
+    chartData = safeHitting.map(h => ({ season: h.season, Overall: h.overall }));
+  }
+
+  if (chartData.length === 0) {
+    return (
+      <Box sx={{ width: '100%', height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <Typography color="text.secondary">No historical ratings data available.</Typography>
+      </Box>
+    );
   }
 
   return (
@@ -43,7 +55,7 @@ const PlayerTrendsChart: React.FC<PlayerTrendsChartProps> = ({ hittingHistory, p
           <YAxis domain={[40, 99]} />
           <Tooltip />
           <Legend />
-          {playerType === 'two_way' && pitchingHistory ? (
+          {playerType === 'two_way' && safePitching.length > 0 ? (
             <>
               <Line type="monotone" dataKey="Hitting" stroke="#1976d2" strokeWidth={2} dot={{ r: 4 }} />
               <Line type="monotone" dataKey="Pitching" stroke="#d32f2f" strokeWidth={2} dot={{ r: 4 }} />
