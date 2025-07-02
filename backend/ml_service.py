@@ -340,6 +340,7 @@ class BaseballMLService:
             player = db.query(models.Player).filter(models.Player.id == player_id).first()
             if not player:
                 return None
+            player_name = getattr(player, 'full_name', f'ID {player_id}')
             # Get the player's level for weighting
             player_level = getattr(player, 'level', 'MLB')
             level_factor = self._get_level_factor(player_level)
@@ -434,6 +435,10 @@ class BaseballMLService:
             else:
                 feats = np.array(hitting_feats + fielding_feats + pitching_feats + [level_factor * 100, 1.0])
             normed = self._normalize_features(feats)
+            # Debug logging for feature extraction
+            print(f"[DEBUG] extract_player_features: {player_name} (ID {player_id}), mode={mode}, season={season}")
+            print(f"  Raw features: {feats}")
+            print(f"  Normalized features: {normed}")
             return {"raw": feats, "normalized": normed, "level": player_level, "level_factor": level_factor}
         except Exception as e:
             logger.error(f"Error extracting features for player {player_id}: {e}")
@@ -803,6 +808,7 @@ class BaseballMLService:
         player = db.query(models.Player).filter(models.Player.id == player_id).first()
         if not player:
             return {}
+        print(f"[DEBUG] calculate_mlb_show_ratings: {getattr(player, 'full_name', player_id)} (ID {player_id})")
         ptype = self.get_player_type(player)
         def get_ratings(mode, pca_weights):
             # Define feature sets for confidence calculation
@@ -1287,7 +1293,7 @@ ml_service = BaseballMLService()
 if __name__ == "__main__":
     from backend.database import SessionLocal
     db = SessionLocal()
-    sample_names = ["Ohtani", "Arenado", "Sale", "Judge", "Cole", "Velasquez"]
+    sample_names = ["Betts", "Ohtani", "Arenado", "Sale", "Judge", "Cole", "Velasquez"]
     for name in sample_names:
         player = db.query(models.Player).filter(models.Player.full_name.ilike(f"%{name}%")).first()
         if not player:
