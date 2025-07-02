@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@mui/icons-material": "^5.15.0",
+    "@mui/material": "^5.15.0",
+    "@mui/x-data-grid": "^5.17.24"
+  }
+} 

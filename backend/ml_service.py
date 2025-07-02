@@ -156,115 +156,110 @@ class BaseballMLService:
     
     def compute_level_weights_from_data(self, db: Session):
         """Compute data-driven level weights by analyzing performance differences between levels"""
-        try:
-            print("[ML] Computing data-driven level weights...")
-            
-            # Get all players with stats
-            players = db.query(models.Player).all()
-            
-            # Collect stats by level
-            level_stats = {
-                'MLB': {'batting': [], 'pitching': []},
-                'AAA': {'batting': [], 'pitching': []},
-                'AA': {'batting': [], 'pitching': []},
-                'A+': {'batting': [], 'pitching': []},
-                'A': {'batting': [], 'pitching': []},
-                'Rk': {'batting': [], 'pitching': []}
-            }
-            
-            # Collect batting stats by level
-            for player in players:
-                player_level = getattr(player, 'level', None)
-                if not player_level or player_level not in level_stats:
-                    continue
-                    
-                # Get latest batting stats
-                bat_stats = db.query(models.StandardBattingStat).filter(
-                    models.StandardBattingStat.player_id == player.id
-                ).order_by(models.StandardBattingStat.season.desc()).first()
+        # Only recompute if not already computed
+        if hasattr(self, 'data_driven_level_weights') and self.data_driven_level_weights:
+            return
+        print("[ML] Computing data-driven level weights...")
+        
+        # Get all players with stats
+        players = db.query(models.Player).all()
+        
+        # Collect stats by level
+        level_stats = {
+            'MLB': {'batting': [], 'pitching': []},
+            'AAA': {'batting': [], 'pitching': []},
+            'AA': {'batting': [], 'pitching': []},
+            'A+': {'batting': [], 'pitching': []},
+            'A': {'batting': [], 'pitching': []},
+            'Rk': {'batting': [], 'pitching': []}
+        }
+        
+        # Collect batting stats by level
+        for player in players:
+            player_level = getattr(player, 'level', None)
+            if not player_level or player_level not in level_stats:
+                continue
                 
-                if bat_stats:
-                    # Collect key batting metrics
-                    stats_dict = {
-                        'ba': self._safe_float(bat_stats.ba),
-                        'obp': self._safe_float(bat_stats.obp),
-                        'slg': self._safe_float(bat_stats.slg),
-                        'hr': self._safe_float(bat_stats.hr),
-                        'bb': self._safe_float(bat_stats.bb),
-                        'so': self._safe_float(bat_stats.so),
-                        'sb': self._safe_float(bat_stats.sb),
-                        'pa': self._safe_float(bat_stats.pa)
-                    }
-                    # Only include if player had meaningful playing time
-                    if stats_dict['pa'] > 50:
-                        level_stats[player_level]['batting'].append(stats_dict)
-                
-                # Get latest pitching stats
-                pit_stats = db.query(models.StandardPitchingStat).filter(
-                    models.StandardPitchingStat.player_id == player.id
-                ).order_by(models.StandardPitchingStat.season.desc()).first()
-                
-                if pit_stats:
-                    # Collect key pitching metrics
-                    stats_dict = {
-                        'era': self._safe_float(pit_stats.era),
-                        'ip': self._safe_float(pit_stats.ip),
-                        'so': self._safe_float(pit_stats.so),
-                        'bb': self._safe_float(pit_stats.bb),
-                        'era_plus': self._safe_float(pit_stats.era_plus),
-                        'whip': self._safe_float(pit_stats.whip)
-                    }
-                    # Only include if player had meaningful innings
-                    if stats_dict['ip'] > 10:
-                        level_stats[player_level]['pitching'].append(stats_dict)
+            # Get latest batting stats
+            bat_stats = db.query(models.StandardBattingStat).filter(
+                models.StandardBattingStat.player_id == player.id
+            ).order_by(models.StandardBattingStat.season.desc()).first()
             
-            # Calculate level weights based on performance differences
-            level_weights = {}
+            if bat_stats:
+                # Collect key batting metrics
+                stats_dict = {
+                    'ba': self._safe_float(bat_stats.ba),
+                    'obp': self._safe_float(bat_stats.obp),
+                    'slg': self._safe_float(bat_stats.slg),
+                    'hr': self._safe_float(bat_stats.hr),
+                    'bb': self._safe_float(bat_stats.bb),
+                    'so': self._safe_float(bat_stats.so),
+                    'sb': self._safe_float(bat_stats.sb),
+                    'pa': self._safe_float(bat_stats.pa)
+                }
+                # Only include if player had meaningful playing time
+                if stats_dict['pa'] > 50:
+                    level_stats[player_level]['batting'].append(stats_dict)
             
-            # Use MLB as baseline (1.0)
-            level_weights['MLB'] = 1.0
+            # Get latest pitching stats
+            pit_stats = db.query(models.StandardPitchingStat).filter(
+                models.StandardPitchingStat.player_id == player.id
+            ).order_by(models.StandardPitchingStat.season.desc()).first()
             
-            # Calculate batting weights
-            mlb_batting_avg = self._calculate_avg_performance(level_stats['MLB']['batting'])
-            if mlb_batting_avg:
-                for level in ['AAA', 'AA', 'A+', 'A', 'Rk']:
-                    if level_stats[level]['batting']:
-                        level_avg = self._calculate_avg_performance(level_stats[level]['batting'])
-                        if level_avg and mlb_batting_avg:
-                            # Calculate weight based on performance ratio
-                            batting_weight = self._calculate_performance_ratio(level_avg, mlb_batting_avg)
-                            level_weights[level] = batting_weight
-            
-            # Calculate pitching weights (inverse for ERA - lower is better)
-            mlb_pitching_avg = self._calculate_avg_performance(level_stats['MLB']['pitching'])
-            if mlb_pitching_avg:
-                for level in ['AAA', 'AA', 'A+', 'A', 'Rk']:
-                    if level_stats[level]['pitching']:
-                        level_avg = self._calculate_avg_performance(level_stats[level]['pitching'])
-                        if level_avg and mlb_pitching_avg:
-                            # For pitching, lower ERA is better, so we invert the ratio
-                            pitching_weight = self._calculate_performance_ratio(mlb_pitching_avg, level_avg)
-                            # Combine with existing batting weight if available
-                            if level in level_weights:
-                                level_weights[level] = (level_weights[level] + pitching_weight) / 2
-                            else:
-                                level_weights[level] = pitching_weight
-            
-            # Ensure weights are reasonable (between 0.1 and 1.0)
-            for level in level_weights:
-                level_weights[level] = max(0.1, min(1.0, level_weights[level]))
-            
-            # Store the computed weights
-            self.data_driven_level_weights = level_weights
-            
-            print(f"[ML] Data-driven level weights computed: {level_weights}")
-            
-        except Exception as e:
-            logger.error(f"Error computing level weights: {e}")
-            # Fall back to default weights
-            self.data_driven_level_weights = {
-                'MLB': 1.0, 'AAA': 0.8, 'AA': 0.6, 'A+': 0.4, 'A': 0.3, 'Rk': 0.2
-            }
+            if pit_stats:
+                # Collect key pitching metrics
+                stats_dict = {
+                    'era': self._safe_float(pit_stats.era),
+                    'ip': self._safe_float(pit_stats.ip),
+                    'so': self._safe_float(pit_stats.so),
+                    'bb': self._safe_float(pit_stats.bb),
+                    'era_plus': self._safe_float(pit_stats.era_plus),
+                    'whip': self._safe_float(pit_stats.whip)
+                }
+                # Only include if player had meaningful innings
+                if stats_dict['ip'] > 10:
+                    level_stats[player_level]['pitching'].append(stats_dict)
+        
+        # Calculate level weights based on performance differences
+        level_weights = {}
+        
+        # Use MLB as baseline (1.0)
+        level_weights['MLB'] = 1.0
+        
+        # Calculate batting weights
+        mlb_batting_avg = self._calculate_avg_performance(level_stats['MLB']['batting'])
+        if mlb_batting_avg:
+            for level in ['AAA', 'AA', 'A+', 'A', 'Rk']:
+                if level_stats[level]['batting']:
+                    level_avg = self._calculate_avg_performance(level_stats[level]['batting'])
+                    if level_avg and mlb_batting_avg:
+                        # Calculate weight based on performance ratio
+                        batting_weight = self._calculate_performance_ratio(level_avg, mlb_batting_avg)
+                        level_weights[level] = batting_weight
+        
+        # Calculate pitching weights (inverse for ERA - lower is better)
+        mlb_pitching_avg = self._calculate_avg_performance(level_stats['MLB']['pitching'])
+        if mlb_pitching_avg:
+            for level in ['AAA', 'AA', 'A+', 'A', 'Rk']:
+                if level_stats[level]['pitching']:
+                    level_avg = self._calculate_avg_performance(level_stats[level]['pitching'])
+                    if level_avg and mlb_pitching_avg:
+                        # For pitching, lower ERA is better, so we invert the ratio
+                        pitching_weight = self._calculate_performance_ratio(mlb_pitching_avg, level_avg)
+                        # Combine with existing batting weight if available
+                        if level in level_weights:
+                            level_weights[level] = (level_weights[level] + pitching_weight) / 2
+                        else:
+                            level_weights[level] = pitching_weight
+        
+        # Ensure weights are reasonable (between 0.1 and 1.0)
+        for level in level_weights:
+            level_weights[level] = max(0.1, min(1.0, level_weights[level]))
+        
+        # Store the computed weights
+        self.data_driven_level_weights = level_weights
+        
+        print(f"[ML] Data-driven level weights computed: {level_weights}")
     
     def _safe_float(self, val):
         """Safely convert value to float"""
@@ -436,9 +431,9 @@ class BaseballMLService:
                 feats = np.array(hitting_feats + fielding_feats + pitching_feats + [level_factor * 100, 1.0])
             normed = self._normalize_features(feats)
             # Debug logging for feature extraction
-            print(f"[DEBUG] extract_player_features: {player_name} (ID {player_id}), mode={mode}, season={season}")
-            print(f"  Raw features: {feats}")
-            print(f"  Normalized features: {normed}")
+            # print(f"[DEBUG] extract_player_features: {player_name} (ID {player_id}), mode={mode}, season={season}")
+            # print(f"  Raw features: {feats}")
+            # print(f"  Normalized features: {normed}")
             return {"raw": feats, "normalized": normed, "level": player_level, "level_factor": level_factor}
         except Exception as e:
             logger.error(f"Error extracting features for player {player_id}: {e}")
@@ -1308,7 +1303,5 @@ if __name__ == "__main__":
             continue
         ratings = ml_service.calculate_mlb_show_ratings(db, int(player_id))
         print(f"\n[DEBUG] Player: {player.full_name} (Type: {ml_service.get_player_type(player)})")
-        print("Raw features:", feats['raw'])
-        print("Normalized features:", feats['normalized'])
         print("Ratings:", ratings)
     db.close() 
