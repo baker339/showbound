@@ -5,7 +5,8 @@ import re
 from sqlalchemy.exc import IntegrityError
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.database import SessionLocal
-from backend.models import Player, PlayerBio, StatTable, StatRow, parse_positions
+from backend.models import Player, PlayerBio, StatTable, StatRow, parse_positions, PlayerFeatures
+from backend.ml_service import ml_service
 
 def parse_bats_throws(bats_throws_str):
     # Example: 'Right \u2022Throws:Right' or 'Left \u2022Throws:Left'
@@ -196,6 +197,39 @@ def main():
         except Exception as e:
             print(f"[ERROR] Exception for {full_name}: {e}")
             session.rollback()
+    session.close()
+
+    # --- Compute and store features for all players ---
+    session = SessionLocal()
+    players = session.query(Player).all()
+    for player in players:
+        player_id = getattr(player, 'id', None)
+        if not isinstance(player_id, int):
+            print(f"[WARN] Skipping player with invalid id: {player_id} ({type(player_id)})")
+            continue
+        feats = ml_service.extract_player_features(session, player_id)
+        if feats is None:
+            continue
+        # Upsert PlayerFeatures
+        pf = session.query(PlayerFeatures).filter_by(player_id=player_id).first()
+        if pf:
+            pf.raw_features = feats['raw']
+            pf.normalized_features = feats['normalized']
+        else:
+            pf = PlayerFeatures(
+                player_id=player_id,
+                raw_features=feats['raw'],
+                normalized_features=feats['normalized']
+            )
+            session.add(pf)
+    session.commit()
+    # Refresh in-memory feature cache after updating DB
+    ml_service.refresh_feature_cache(session)
+
+    # --- Compute and store ML level weights ---
+    ml_service.compute_level_weights_from_data(session, force=True)
+    ml_service.store_level_weights(session)
+    print("[ML] Level weights computed and stored.")
     session.close()
 
 if __name__ == '__main__':

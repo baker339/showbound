@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from database import SessionLocal
-from models import Player, PlayerBio, StatTable, StatRow, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat
+from models import Player, PlayerBio, StatTable, StatRow, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat, PlayerFeatures
 from ml_service import ml_service
+import time
 
 router = APIRouter()
 
@@ -50,12 +51,15 @@ def search_players(name: str, db: Session = Depends(get_db)):
 @router.get("/players")
 def list_players(skip: int = 0, limit: int = 10000, db: Session = Depends(get_db)):
     players = db.query(Player).offset(skip).limit(limit).all()
+    # Optionally, you can include cached features or ratings here if needed, e.g.:
+    # features_cache = {pf.player_id: pf for pf in db.query(PlayerFeatures).all()}
     return [{
         "id": p.id,
         "full_name": p.full_name,
         "primary_position": p.primary_position,
         "team": p.team,
         "level": p.level
+        # Optionally add: 'features': features_cache.get(p.id).normalized_features if p.id in features_cache else None
     } for p in players]
 
 @router.get("/player/{player_id}/standard_batting")
@@ -102,18 +106,48 @@ def get_player_ratings(player_id: int, db: Session = Depends(get_db)):
 
 @router.get("/player/{player_id}/mlb_comps")
 def get_player_comparisons(player_id: int, db: Session = Depends(get_db)):
+    start = time.time()
     comps = ml_service.get_similar_players(db, player_id)
     if not comps:
         raise HTTPException(status_code=404, detail="No similar players found")
+    elapsed = time.time() - start
+    print(f"[PERF] /mlb_comps for player {player_id} took {elapsed:.2f}s")
     return {"comparisons": comps}
 
-@router.get("/player/{player_id}/prediction")
-def get_player_prediction(player_id: int, db: Session = Depends(get_db)):
-    prediction = ml_service.predict_mlb_success(db, player_id)
-    if not prediction:
-        raise HTTPException(status_code=404, detail="Player or prediction not found")
-    return prediction
+# @router.get("/player/{player_id}/prediction")
+# def get_player_prediction(player_id: int, db: Session = Depends(get_db)):
+#     prediction = ml_service.predict_mlb_success(db, player_id)
+#     if not prediction:
+#         raise HTTPException(status_code=404, detail="Player or prediction not found")
+#     return prediction
 
 @router.get("/model/metrics")
 def get_model_metrics():
-    return ml_service.metrics 
+    return ml_service.metrics
+
+@router.post("/features/populate")
+def populate_player_features(db: Session = Depends(get_db)):
+    count = 0
+    players = db.query(Player).all()
+    for player in players:
+        player_id = getattr(player, 'id', None)
+        if not isinstance(player_id, int):
+            continue
+        feats = ml_service.extract_player_features(db, player_id)
+        if feats is None:
+            continue
+        pf = db.query(PlayerFeatures).filter_by(player_id=player_id).first()
+        if pf:
+            pf.raw_features = feats['raw']
+            pf.normalized_features = feats['normalized']
+        else:
+            pf = PlayerFeatures(
+                player_id=player_id,
+                raw_features=feats['raw'],
+                normalized_features=feats['normalized']
+            )
+            db.add(pf)
+        count += 1
+    db.commit()
+    ml_service.refresh_feature_cache(db)
+    return {"status": "success", "players_processed": count} 

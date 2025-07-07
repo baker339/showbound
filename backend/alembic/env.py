@@ -9,8 +9,8 @@ import sys
 import os
 # Add project root to sys.path for absolute imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from database import Base
-import models
+from models import Base
+import models  # Ensure all models are registered with Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -13,7 +13,9 @@ import logging
 import datetime
 from sklearn.decomposition import PCA
 import models
+from models import Player, PlayerFeatures, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat, LevelWeights
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +30,41 @@ class BaseballMLService:
         self.last_n_players = 0
         self.last_n_stats = 0
         self.metrics: dict[str, Optional[float]] = {"rmse": None, "r2": None}
+        self._feature_cache = {}
+        self._cache_last_loaded = None
+        
+    def refresh_feature_cache(self, db: Session):
+        """Load all player features from the player_features table into memory."""
+        self._feature_cache = {}
+        for pf in db.query(PlayerFeatures).all():
+            self._feature_cache[pf.player_id] = {
+                "raw": pf.raw_features,
+                "normalized": pf.normalized_features,
+                "last_updated": pf.last_updated
+            }
+        self._cache_last_loaded = datetime.datetime.utcnow()
+        print(f"[CACHE] Loaded {len(self._feature_cache)} player features into memory.")
+
+    def get_cached_features(self, db: Session, player_id: int):
+        # First check in-memory cache
+        cached = self._feature_cache.get(player_id)
+        if cached is not None:
+            return cached
+        # If not in cache, check the PlayerFeatures table in the DB
+        pf = db.query(PlayerFeatures).filter(PlayerFeatures.player_id == player_id).first()
+        if pf is not None:
+            # Add to in-memory cache for future use
+            self._feature_cache[player_id] = {
+                "raw": pf.raw_features,
+                "normalized": pf.normalized_features,
+                "last_updated": pf.last_updated
+            }
+            return self._feature_cache[player_id]
+        return None
         
     def compute_stat_normalization(self, db: Session):
         """Compute min/max (or percentiles) for each stat from MLB data and cache them."""
-        players = db.query(models.Player).all()
+        players = db.query(Player).all()
         first_feats = None
         for player in players:
             player_id = getattr(player, 'id', None)
@@ -122,8 +155,8 @@ class BaseballMLService:
     
     def _infer_level(self, db, player_id):
         # Try to infer from most recent stat table
-        bat = db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first()
-        pit = db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first()
+        bat = db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id).order_by(StandardBattingStat.season.desc()).first()
+        pit = db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id).order_by(StandardPitchingStat.season.desc()).first()
         stat = bat if (bat and (not pit or bat.season >= pit.season)) else pit
         if stat and hasattr(stat, 'team') and stat.team:
             team = stat.team.lower()
@@ -154,112 +187,113 @@ class BaseballMLService:
         else:
             return default_level_factors.get(level, 0.5)
     
-    def compute_level_weights_from_data(self, db: Session):
+    def compute_level_weights_from_data(self, db: Session, force: bool = False):
         """Compute data-driven level weights by analyzing performance differences between levels"""
-        # Only recompute if not already computed
-        if hasattr(self, 'data_driven_level_weights') and self.data_driven_level_weights:
+        # Only recompute if not already computed, unless force=True
+        if not force and hasattr(self, 'data_driven_level_weights') and isinstance(getattr(self, 'data_driven_level_weights', None), dict) and getattr(self, 'data_driven_level_weights', None):
             return
-        print("[ML] Computing data-driven level weights...")
-        
-        # Get all players with stats
-        players = db.query(models.Player).all()
-        
-        # Collect stats by level
-        level_stats = {
-            'MLB': {'batting': [], 'pitching': []},
-            'AAA': {'batting': [], 'pitching': []},
-            'AA': {'batting': [], 'pitching': []},
-            'A+': {'batting': [], 'pitching': []},
-            'A': {'batting': [], 'pitching': []},
-            'Rk': {'batting': [], 'pitching': []}
-        }
-        
-        # Collect batting stats by level
-        for player in players:
-            player_level = getattr(player, 'level', None)
-            if not player_level or player_level not in level_stats:
-                continue
-                
-            # Get latest batting stats
-            bat_stats = db.query(models.StandardBattingStat).filter(
-                models.StandardBattingStat.player_id == player.id
-            ).order_by(models.StandardBattingStat.season.desc()).first()
-            
-            if bat_stats:
-                # Collect key batting metrics
-                stats_dict = {
-                    'ba': self._safe_float(bat_stats.ba),
-                    'obp': self._safe_float(bat_stats.obp),
-                    'slg': self._safe_float(bat_stats.slg),
-                    'hr': self._safe_float(bat_stats.hr),
-                    'bb': self._safe_float(bat_stats.bb),
-                    'so': self._safe_float(bat_stats.so),
-                    'sb': self._safe_float(bat_stats.sb),
-                    'pa': self._safe_float(bat_stats.pa)
-                }
-                # Only include if player had meaningful playing time
-                if stats_dict['pa'] > 50:
-                    level_stats[player_level]['batting'].append(stats_dict)
-            
-            # Get latest pitching stats
-            pit_stats = db.query(models.StandardPitchingStat).filter(
-                models.StandardPitchingStat.player_id == player.id
-            ).order_by(models.StandardPitchingStat.season.desc()).first()
-            
-            if pit_stats:
-                # Collect key pitching metrics
-                stats_dict = {
-                    'era': self._safe_float(pit_stats.era),
-                    'ip': self._safe_float(pit_stats.ip),
-                    'so': self._safe_float(pit_stats.so),
-                    'bb': self._safe_float(pit_stats.bb),
-                    'era_plus': self._safe_float(pit_stats.era_plus),
-                    'whip': self._safe_float(pit_stats.whip)
-                }
-                # Only include if player had meaningful innings
-                if stats_dict['ip'] > 10:
-                    level_stats[player_level]['pitching'].append(stats_dict)
-        
-        # Calculate level weights based on performance differences
-        level_weights = {}
-        
-        # Use MLB as baseline (1.0)
-        level_weights['MLB'] = 1.0
-        
-        # Calculate batting weights
-        mlb_batting_avg = self._calculate_avg_performance(level_stats['MLB']['batting'])
-        if mlb_batting_avg:
-            for level in ['AAA', 'AA', 'A+', 'A', 'Rk']:
-                if level_stats[level]['batting']:
-                    level_avg = self._calculate_avg_performance(level_stats[level]['batting'])
-                    if level_avg and mlb_batting_avg:
-                        # Calculate weight based on performance ratio
-                        batting_weight = self._calculate_performance_ratio(level_avg, mlb_batting_avg)
-                        level_weights[level] = batting_weight
-        
-        # Calculate pitching weights (inverse for ERA - lower is better)
-        mlb_pitching_avg = self._calculate_avg_performance(level_stats['MLB']['pitching'])
-        if mlb_pitching_avg:
-            for level in ['AAA', 'AA', 'A+', 'A', 'Rk']:
-                if level_stats[level]['pitching']:
-                    level_avg = self._calculate_avg_performance(level_stats[level]['pitching'])
-                    if level_avg and mlb_pitching_avg:
-                        # For pitching, lower ERA is better, so we invert the ratio
-                        pitching_weight = self._calculate_performance_ratio(mlb_pitching_avg, level_avg)
-                        # Combine with existing batting weight if available
-                        if level in level_weights:
-                            level_weights[level] = (level_weights[level] + pitching_weight) / 2
-                        else:
-                            level_weights[level] = pitching_weight
-        
-        # Ensure weights are reasonable (between 0.1 and 1.0)
-        for level in level_weights:
-            level_weights[level] = max(0.1, min(1.0, level_weights[level]))
-        
-        # Store the computed weights
-        self.data_driven_level_weights = level_weights
-        
-        print(f"[ML] Data-driven level weights computed: {level_weights}")
+        if force or not hasattr(self, 'data_driven_level_weights') or not isinstance(getattr(self, 'data_driven_level_weights', None), dict) or not getattr(self, 'data_driven_level_weights', None):
+            print("[ML] Computing data-driven level weights...")
+
+            # Get all players with stats
+            players = db.query(Player).all()
+
+            # Collect stats by level
+            level_stats = {
+                'MLB': {'batting': [], 'pitching': []},
+                'AAA': {'batting': [], 'pitching': []},
+                'AA': {'batting': [], 'pitching': []},
+                'A+': {'batting': [], 'pitching': []},
+                'A': {'batting': [], 'pitching': []},
+                'Rk': {'batting': [], 'pitching': []}
+            }
+
+            # Collect batting stats by level
+            for player in players:
+                player_level = getattr(player, 'level', None)
+                if not player_level or player_level not in level_stats:
+                    continue
+
+                # Get latest batting stats
+                bat_stats = db.query(StandardBattingStat).filter(
+                    StandardBattingStat.player_id == player.id
+                ).order_by(StandardBattingStat.season.desc()).first()
+
+                if bat_stats:
+                    # Collect key batting metrics
+                    stats_dict = {
+                        'ba': self._safe_float(bat_stats.ba),
+                        'obp': self._safe_float(bat_stats.obp),
+                        'slg': self._safe_float(bat_stats.slg),
+                        'hr': self._safe_float(bat_stats.hr),
+                        'bb': self._safe_float(bat_stats.bb),
+                        'so': self._safe_float(bat_stats.so),
+                        'sb': self._safe_float(bat_stats.sb),
+                        'pa': self._safe_float(bat_stats.pa)
+                    }
+                    # Only include if player had meaningful playing time
+                    if stats_dict['pa'] > 50:
+                        level_stats[player_level]['batting'].append(stats_dict)
+
+                # Get latest pitching stats
+                pit_stats = db.query(StandardPitchingStat).filter(
+                    StandardPitchingStat.player_id == player.id
+                ).order_by(StandardPitchingStat.season.desc()).first()
+
+                if pit_stats:
+                    # Collect key pitching metrics
+                    stats_dict = {
+                        'era': self._safe_float(pit_stats.era),
+                        'ip': self._safe_float(pit_stats.ip),
+                        'so': self._safe_float(pit_stats.so),
+                        'bb': self._safe_float(pit_stats.bb),
+                        'era_plus': self._safe_float(pit_stats.era_plus),
+                        'whip': self._safe_float(pit_stats.whip)
+                    }
+                    # Only include if player had meaningful innings
+                    if stats_dict['ip'] > 10:
+                        level_stats[player_level]['pitching'].append(stats_dict)
+
+            # Calculate level weights based on performance differences
+            level_weights = {}
+
+            # Use MLB as baseline (1.0)
+            level_weights['MLB'] = 1.0
+
+            # Calculate batting weights
+            mlb_batting_avg = self._calculate_avg_performance(level_stats['MLB']['batting'])
+            if mlb_batting_avg:
+                for level in ['AAA', 'AA', 'A+', 'A', 'Rk']:
+                    if level_stats[level]['batting']:
+                        level_avg = self._calculate_avg_performance(level_stats[level]['batting'])
+                        if level_avg and mlb_batting_avg:
+                            # Calculate weight based on performance ratio
+                            batting_weight = self._calculate_performance_ratio(level_avg, mlb_batting_avg)
+                            level_weights[level] = batting_weight
+
+            # Calculate pitching weights (inverse for ERA - lower is better)
+            mlb_pitching_avg = self._calculate_avg_performance(level_stats['MLB']['pitching'])
+            if mlb_pitching_avg:
+                for level in ['AAA', 'AA', 'A+', 'A', 'Rk']:
+                    if level_stats[level]['pitching']:
+                        level_avg = self._calculate_avg_performance(level_stats[level]['pitching'])
+                        if level_avg and mlb_pitching_avg:
+                            # For pitching, lower ERA is better, so we invert the ratio
+                            pitching_weight = self._calculate_performance_ratio(mlb_pitching_avg, level_avg)
+                            # Combine with existing batting weight if available
+                            if level in level_weights:
+                                level_weights[level] = (level_weights[level] + pitching_weight) / 2
+                            else:
+                                level_weights[level] = pitching_weight
+
+            # Ensure weights are reasonable (between 0.1 and 1.0)
+            for level in level_weights:
+                level_weights[level] = max(0.1, min(1.0, level_weights[level]))
+
+            # Store the computed weights
+            self.data_driven_level_weights = level_weights
+
+            print(f"[ML] Data-driven level weights computed: {level_weights}")
     
     def _safe_float(self, val):
         """Safely convert value to float"""
@@ -330,9 +364,20 @@ class BaseballMLService:
         return 0.5  # Default fallback
     
     def extract_player_features(self, db: Session, player_id: int, mode: str = 'all', season: Optional[int] = None) -> Optional[dict]:
+        start = time.time()
         """Extract feature vector for a player, split by mode: 'hitting', 'pitching', or 'all' (default). If season is provided, fetch stats for that season."""
         try:
-            player = db.query(models.Player).filter(models.Player.id == player_id).first()
+            # Use cache if available and not requesting a specific season
+            if season is None and hasattr(self, '_feature_cache') and player_id in self._feature_cache:
+                cached = self._feature_cache[player_id]
+                if mode == 'all':
+                    return {
+                        "raw": cached["raw"],
+                        "normalized": cached["normalized"],
+                        "level": None,  # Not cached
+                        "level_factor": None  # Not cached
+                    }
+            player = db.query(Player).filter(Player.id == player_id).first()
             if not player:
                 return None
             player_name = getattr(player, 'full_name', f'ID {player_id}')
@@ -345,13 +390,13 @@ class BaseballMLService:
                     return db.query(model).filter(model.player_id == player_id, model.season == season).first()
                 else:
                     return db.query(model).filter(model.player_id == player_id).order_by(model.season.desc()).first()
-            adv_bat = get_stat(models.AdvancedBattingStat, season)
-            val_bat = get_stat(models.ValueBattingStat, season)
-            std_bat = get_stat(models.StandardBattingStat, season)
-            adv_pit = get_stat(models.AdvancedPitchingStat, season)
-            val_pit = get_stat(models.ValuePitchingStat, season)
-            std_pit = get_stat(models.StandardPitchingStat, season)
-            std_field = get_stat(models.StandardFieldingStat, season)
+            adv_bat = get_stat(AdvancedBattingStat, season)
+            val_bat = get_stat(ValueBattingStat, season)
+            std_bat = get_stat(StandardBattingStat, season)
+            adv_pit = get_stat(AdvancedPitchingStat, season)
+            val_pit = get_stat(ValuePitchingStat, season)
+            std_pit = get_stat(StandardPitchingStat, season)
+            std_field = get_stat(StandardFieldingStat, season)
             def safe_float(val):
                 try:
                     return float(val)
@@ -430,10 +475,7 @@ class BaseballMLService:
             else:
                 feats = np.array(hitting_feats + fielding_feats + pitching_feats + [level_factor * 100, 1.0])
             normed = self._normalize_features(feats)
-            # Debug logging for feature extraction
-            # print(f"[DEBUG] extract_player_features: {player_name} (ID {player_id}), mode={mode}, season={season}")
-            # print(f"  Raw features: {feats}")
-            # print(f"  Normalized features: {normed}")
+            # print(f"[PERF] extract_player_features for player {player_id} (mode={mode}, season={season}) took {elapsed:.2f}s")
             return {"raw": feats, "normalized": normed, "level": player_level, "level_factor": level_factor}
         except Exception as e:
             logger.error(f"Error extracting features for player {player_id}: {e}")
@@ -458,11 +500,11 @@ class BaseballMLService:
     def fit_models(self, db: Session):
         """Fit separate models for pitchers and position players using the correct feature sets."""
         try:
-            # Compute data-driven level weights first
-            self.compute_level_weights_from_data(db)
+            # Compute data-driven level weights first (do not force recompute unless needed)
+            self.compute_level_weights_from_data(db, force=False)
             
             # Only use MLB players for training the comparison models
-            players = db.query(models.Player).filter(models.Player.level == 'MLB').all()
+            players = db.query(Player).filter(Player.level == 'MLB').all()
             pitcher_feats, pitcher_ids, pitcher_overalls = [], [], []
             hitter_feats, hitter_ids, hitter_overalls = [], [], []
             
@@ -594,10 +636,11 @@ class BaseballMLService:
         return np.clip(40 + weighted_sum * 0.5, 40, 99)
     
     def get_similar_players(self, db: Session, player_id: int, k: int = 5) -> List[Dict]:
+        start = time.time()
         """Find similar MLB players using KNN"""
         if not self.is_fitted:
             self.fit_models(db)
-        player = db.query(models.Player).filter(models.Player.id == player_id).first()
+        player = db.query(Player).filter(Player.id == player_id).first()
         if not player:
             return []
         ptype = self.get_player_type(player)
@@ -633,7 +676,7 @@ class BaseballMLService:
         today = datetime.date.today().isoformat()
         for i, (distance, idx) in enumerate(zip(distances[0][1:], indices[0][1:])):  # Skip first (self)
             similar_player_id = player_ids[idx]
-            player = db.query(models.Player).filter(models.Player.id == similar_player_id).first()
+            player = db.query(Player).filter(Player.id == similar_player_id).first()
             if player:
                 similar_players.append({
                     'id': i,
@@ -644,6 +687,8 @@ class BaseballMLService:
                     'comparison_reason': 'Statistical similarity',
                     'comp_date': today
                 })
+        elapsed = time.time() - start
+        print(f"[PERF] get_similar_players for player {player_id} took {elapsed:.2f}s")
         return similar_players
     
     def get_player_type(self, player) -> str:
@@ -716,9 +761,9 @@ class BaseballMLService:
 
     def _get_recent_overalls(self, db, player_id: int, mode: str, n_seasons: int = 3) -> list:
         if mode == 'hitting':
-            stats = db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.asc()).all()
+            stats = db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id).order_by(StandardBattingStat.season.asc()).all()
         elif mode == 'pitching':
-            stats = db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.asc()).all()
+            stats = db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id).order_by(StandardPitchingStat.season.asc()).all()
         else:
             return []
         overalls = []
@@ -752,7 +797,7 @@ class BaseballMLService:
                 overall = np.mean(top_tools)
             else:
                 overall = 40.0
-            overalls.append(self._scale_rating(float(overall), 40, 110))
+            overalls.append(overall)
         return overalls[-n_seasons:]
 
     def _get_recent_overalls_with_seasons(self, db, player_id: int, mode: str, n_seasons: int = 5) -> list:
@@ -760,9 +805,9 @@ class BaseballMLService:
         Fetch the last n_seasons' (season, overall) for a player (batting or pitching), oldest to newest.
         """
         if mode == 'hitting':
-            stats = db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.asc()).all()
+            stats = db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id).order_by(StandardBattingStat.season.asc()).all()
         elif mode == 'pitching':
-            stats = db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.asc()).all()
+            stats = db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id).order_by(StandardPitchingStat.season.asc()).all()
         else:
             return []
         results = []
@@ -796,512 +841,122 @@ class BaseballMLService:
                 overall = np.mean(top_tools)
             else:
                 overall = 40.0
-            results.append({"season": season, "overall": self._scale_rating(float(overall), 40, 110)})
+            results.append({"season": season, "overall": overall})
         return results[-n_seasons:]
 
     def calculate_mlb_show_ratings(self, db: Session, player_id: int) -> Dict:
-        player = db.query(models.Player).filter(models.Player.id == player_id).first()
-        if not player:
-            return {}
-        print(f"[DEBUG] calculate_mlb_show_ratings: {getattr(player, 'full_name', player_id)} (ID {player_id})")
-        ptype = self.get_player_type(player)
-        def get_ratings(mode, pca_weights):
-            # Define feature sets for confidence calculation
-            def safe_float(val):
-                try:
-                    return float(val)
-                except (TypeError, ValueError):
-                    return 0.0
-            hitting_feats = [
-                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'ba', None)),
-                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'obp', None)),
-                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'ev', None)),
-                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'hardh_pct', None)),
-                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'ld_pct', None)),
-                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'slg', None)),
-                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'iso', None)),
-                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'barrel_pct', None)),
-                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'hr', None)),
-                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'bb_pct', None)),
-                safe_float(getattr(db.query(models.AdvancedBattingStat).filter(models.AdvancedBattingStat.player_id == player_id).order_by(models.AdvancedBattingStat.season.desc()).first(), 'so_pct', None)),
-                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'bb', None)),
-                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'so', None)),
-                safe_float(getattr(db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.desc()).first(), 'sb', None)),
-                safe_float(getattr(db.query(models.ValueBattingStat).filter(models.ValueBattingStat.player_id == player_id).order_by(models.ValueBattingStat.season.desc()).first(), 'rbaser', None)),
-            ]
-            fielding_feats = [
-                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'fld_pct', None)),
-                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'rdrs', None)),
-                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'rtot', None)),
-                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'a', None)),
-                safe_float(getattr(db.query(models.StandardFieldingStat).filter(models.StandardFieldingStat.player_id == player_id).order_by(models.StandardFieldingStat.season.desc()).first(), 'dp', None)),
-            ]
-            pitching_feats = [
-                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'k_pct', None)),
-                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'bb_pct', None)),
-                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'hr_pct', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'era', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'fip', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'whip', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'era_plus', None)),
-                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'war', None)),
-                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'waa', None)),
-                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'raa', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'so', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'bb', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'ip', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'gs', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'so9', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'bb9', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'hr9', None)),
-                safe_float(getattr(db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.desc()).first(), 'h9', None)),
-                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'babip', None)),
-                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'lob_pct', None)),
-                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'era_minus', None)),
-                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'fip_minus', None)),
-                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'xfip_minus', None)),
-                safe_float(getattr(db.query(models.AdvancedPitchingStat).filter(models.AdvancedPitchingStat.player_id == player_id).order_by(models.AdvancedPitchingStat.season.desc()).first(), 'siera', None)),
-                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'wpa', None)),
-                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 're24', None)),
-                safe_float(getattr(db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).order_by(models.ValuePitchingStat.season.desc()).first(), 'cwpa', None)),
-            ]
-            feats = self.extract_player_features(db, int(player_id), mode=mode)
-            if feats is None:
-                return {}
-            norm = feats["normalized"]
-            def pca_tool(indices):
-                vals = [float(norm[i]) for i in indices if norm[i] is not None]
-                if not vals:
-                    return 40.0
-                if pca_weights is not None:
-                    return float(np.dot(np.array(vals), np.array([pca_weights[i] for i in indices if norm[i] is not None])))
-                return float(np.mean(vals))
-            contact = pca_tool([0,1,2,3,4])
-            power = pca_tool([5,6,7,8])
-            discipline = pca_tool([9,10,11,12])
-            vision = pca_tool([9,10,0])
-            fielding = pca_tool([15,16,17]) if len(norm) > 17 else 40.0
-            arm_strength = pca_tool([18,19]) if len(norm) > 19 else 40.0
-            arm_accuracy = pca_tool([18,15]) if len(norm) > 18 else 40.0
-            speed = pca_tool([13,14]) if len(norm) > 14 else 40.0
-            stealing = pca_tool([13,14]) if len(norm) > 14 else 40.0
-            k_rating = pca_tool([0, 10, 14]) if mode == 'pitching' else None
-            bb_rating = 100 - pca_tool([1, 11, 15]) if mode == 'pitching' else None
-            gb_rating = pca_tool([19, 23]) if mode == 'pitching' else None
-            hr_rating = 100 - pca_tool([2, 16]) if mode == 'pitching' else None
-            command_rating = pca_tool([3,4,5,20,21,22,23,7,9]) if mode == 'pitching' else None
-            durability_rating = pca_tool([12,13,7]) if mode == 'pitching' else None
-            leverage_rating = pca_tool([24,25,26]) if mode == 'pitching' else None
-            ratings = {}
-            if mode == 'hitting':
-                tool_vals = [float(x) if x is not None else 40.0 for x in [contact, power, discipline, vision, fielding, arm_strength, arm_accuracy, speed, stealing]]
-                top_tools = sorted(tool_vals, reverse=True)[:4]
-                overall = np.mean(top_tools)
-                feats_raw = feats['raw'][:len(hitting_feats) + len(fielding_feats)]
-                n_present = np.count_nonzero([x not in (None, 0.0) for x in feats_raw])
-                confidence = n_present / len(feats_raw) if len(feats_raw) > 0 else 0.0
-                potential = self._calculate_trend_potential(
-                    self._get_recent_overalls(db, player_id, 'hitting'),
-                    self._scale_rating(float(overall), 40, 110),
-                    db=db, player_id=player_id, mode='hitting'
-                )
-                ratings = {
-                    'contact_left': self._scale_rating(float(contact), 40, 110),
-                    'contact_right': self._scale_rating(float(contact), 40, 110),
-                    'power_left': self._scale_rating(float(power), 40, 120),
-                    'power_right': self._scale_rating(float(power), 40, 120),
-                    'discipline': self._scale_rating(float(discipline), 20, 100),
-                    'vision': self._scale_rating(float(vision), 20, 100),
-                    'fielding': self._scale_rating(float(fielding), 40, 100),
-                    'arm_strength': self._scale_rating(float(arm_strength), 40, 100),
-                    'arm_accuracy': self._scale_rating(float(arm_accuracy), 40, 100),
-                    'speed': self._scale_rating(float(speed), 40, 100),
-                    'stealing': self._scale_rating(float(stealing), 40, 100),
-                    'overall_rating': self._scale_rating(float(overall), 40, 110),
-                    'potential_rating': potential,
-                    'confidence_score': confidence,
-                    'player_type': 'position_player',
-                    'historical_overalls': self._get_recent_overalls_with_seasons(db, player_id, 'hitting'),
-                }
-            elif mode == 'pitching':
-                tool_vals = [float(x) if x is not None else 40.0 for x in [k_rating, bb_rating, gb_rating, hr_rating, command_rating]]
-                top_tools = sorted(tool_vals, reverse=True)[:3]
-                overall = np.mean(top_tools)
-                offset = len(hitting_feats) + len(fielding_feats)
-                feats_raw = feats['raw'][offset:offset+len(pitching_feats)]
-                n_present = np.count_nonzero([x not in (None, 0.0) for x in feats_raw])
-                confidence = n_present / len(feats_raw) if len(feats_raw) > 0 else 0.0
-                potential = self._calculate_trend_potential(
-                    self._get_recent_overalls(db, player_id, 'pitching'),
-                    self._scale_rating(float(overall), 40, 110),
-                    db=db, player_id=player_id, mode='pitching'
-                )
-                ratings = {
-                    'k_rating': self._scale_rating(float(k_rating) if k_rating is not None else 40.0, 40, 110),
-                    'bb_rating': self._scale_rating(float(bb_rating) if bb_rating is not None else 40.0, 40, 110),
-                    'gb_rating': self._scale_rating(float(gb_rating) if gb_rating is not None else 40.0, 40, 110),
-                    'hr_rating': self._scale_rating(float(hr_rating) if hr_rating is not None else 40.0, 40, 110),
-                    'command_rating': self._scale_rating(float(command_rating) if command_rating is not None else 40.0, 40, 110),
-                    'durability_rating': self._scale_rating(float(durability_rating) if durability_rating is not None else 40.0, 40, 110),
-                    'leverage_rating': self._scale_rating(float(leverage_rating) if leverage_rating is not None else 40.0, 40, 110),
-                    'overall_rating': self._scale_rating(float(overall), 40, 110),
-                    'potential_rating': potential,
-                    'confidence_score': confidence,
-                    'player_type': 'pitcher',
-                    'historical_overalls': self._get_recent_overalls_with_seasons(db, player_id, 'pitching'),
-                }
-            return ratings
-        if ptype == 'pitcher':
-            raw = get_ratings('pitching', getattr(self, 'pca_weights_pit', None))
-            grades = {k: v for k, v in raw.items() if k not in ('overall_rating', 'potential_rating', 'confidence_score', 'player_type', 'historical_overalls')}
-            return {
-                'grades': grades,
-                'overall_rating': raw.get('overall_rating'),
-                'potential_rating': raw.get('potential_rating'),
-                'confidence_score': raw.get('confidence_score'),
-                'player_type': raw.get('player_type'),
-                'historical_overalls': raw.get('historical_overalls', []),
-            }
-        elif ptype in ('position_player', 'dh'):
-            raw = get_ratings('hitting', getattr(self, 'pca_weights_hit', None))
-            grades = {k: v for k, v in raw.items() if k not in ('overall_rating', 'potential_rating', 'confidence_score', 'player_type', 'historical_overalls')}
-            return {
-                'grades': grades,
-                'overall_rating': raw.get('overall_rating'),
-                'potential_rating': raw.get('potential_rating'),
-                'confidence_score': raw.get('confidence_score'),
-                'player_type': raw.get('player_type'),
-                'historical_overalls': raw.get('historical_overalls', []),
-            }
-        elif ptype == 'two_way':
-            hit = get_ratings('hitting', getattr(self, 'pca_weights_hit', None))
-            pit = get_ratings('pitching', getattr(self, 'pca_weights_pit', None))
-            batting_potential = hit.get('potential_rating', 0)
-            pitching_potential = pit.get('potential_rating', 0)
-            overall = 0.6 * max(hit.get('overall_rating', 0), pit.get('overall_rating', 0)) + 0.4 * min(hit.get('overall_rating', 0), pit.get('overall_rating', 0))
-            potential = 0.6 * max(batting_potential, pitching_potential) + 0.4 * min(batting_potential, pitching_potential)
-            grades = {
-                'batting': {k: v for k, v in hit.items() if k not in ('overall_rating', 'potential_rating', 'confidence_score', 'player_type', 'historical_overalls')},
-                'pitching': {k: v for k, v in pit.items() if k not in ('overall_rating', 'potential_rating', 'confidence_score', 'player_type', 'historical_overalls')},
-            }
-            historical = {
-                'batting': hit.get('historical_overalls', []),
-                'pitching': pit.get('historical_overalls', []),
-            }
-            return {
-                'grades': grades,
-                'overall_rating': overall,
-                'potential_rating': potential,
-                'player_type': 'two_way',
-                'historical_overalls': historical,
-            }
-        else:
-            return {}
-    
-    def _scale_rating(self, value: float, min_val: float, max_val: float) -> float:
-        """Scale a stat from 0-100 normalized value to the desired scout rating range (e.g., 40-99), capped at 99."""
-        # Clamp value to 0-100
-        value = np.clip(value, 0, 100)
-        # Map 0 -> min_val, 100 -> max_val, then cap at 99
-        scaled = min(float(np.round(min_val + (value / 100.0) * (max_val - min_val), 1)), 99.0)
-        return scaled
-    
-    def auto_fit_if_needed(self, db: Session):
-        # Auto-retrain if number of players or stats has changed
-        n_players = db.query(models.Player).count()
-        n_stats = db.query(models.StandardBattingStat).count() + db.query(models.StandardPitchingStat).count()
-        if not self.is_fitted or n_players != self.last_n_players or n_stats != self.last_n_stats:
-            logger.info("Auto-fitting models due to data change or first use.")
+        if not hasattr(self, 'pca_weights_hit') or not hasattr(self, 'pca_weights_pit'):
             self.fit_models(db)
-    
-    def _check_and_fix_feature_dimensions(self, db: Session, features: np.ndarray) -> bool:
-        """Check if feature dimensions match the trained model and retrain if needed"""
-        try:
-            # Check if model is fitted and has expected dimensions
-            if hasattr(self, 'expected_feature_count') and hasattr(self.overall_rating_model, 'estimators_'):
-                # Try to predict with a dummy sample to check dimensions
-                try:
-                    _ = self.overall_rating_model.predict([features.flatten()])
-                    return False  # No dimension mismatch
-                except ValueError as e:
-                    if "features" in str(e).lower():
-                        logger.warning(f"Feature dimension mismatch detected. Retraining model.")
-                        self.fit_models(db)
-                        return True
-            return False
-        except Exception as e:
-            logger.error(f"Error checking feature dimensions: {e}")
-            return False
-
-    def predict_mlb_success(self, db: Session, player_id: int) -> dict:
-        self.auto_fit_if_needed(db)
-        feats = self.extract_player_features(db, int(player_id))
-        if feats is None:
-            return {}
-        features = feats["normalized"]
-        raw_features = feats["raw"]
-        level_factor = feats["level_factor"] * 100  # for consistency with previous logic
-        age_factor = features[10]
-        player = db.query(models.Player).filter(models.Player.id == player_id).first()
-        ptype = self.get_player_type(player)
-        def safe_float(val):
-            try:
-                return float(val)
-            except (TypeError, ValueError):
-                return 0.0
-        # --- Career WAR calculation ---
-        current_career_war = 0.0
-        if ptype == 'pitcher':
-            # Sum WAR from all ValuePitchingStat rows
-            war_vals = [safe_float(s.war) for s in db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).all() if s.war is not None]
-            current_career_war = float(np.nansum(war_vals)) if war_vals else 0.0
-        elif ptype in ('position_player', 'dh'):
-            # Sum oWAR + dWAR from all ValueBattingStat rows
-            owar_vals = [safe_float(s.owar) for s in db.query(models.ValueBattingStat).filter(models.ValueBattingStat.player_id == player_id).all() if s.owar is not None]
-            dwar_vals = [safe_float(s.dwar) for s in db.query(models.ValueBattingStat).filter(models.ValueBattingStat.player_id == player_id).all() if s.dwar is not None]
-            current_career_war = float(np.nansum(owar_vals) + np.nansum(dwar_vals)) if (owar_vals or dwar_vals) else 0.0
-        elif ptype == 'two_way':
-            # Sum both
-            owar_vals = [safe_float(s.owar) for s in db.query(models.ValueBattingStat).filter(models.ValueBattingStat.player_id == player_id).all() if s.owar is not None]
-            dwar_vals = [safe_float(s.dwar) for s in db.query(models.ValueBattingStat).filter(models.ValueBattingStat.player_id == player_id).all() if s.dwar is not None]
-            war_vals = [safe_float(s.war) for s in db.query(models.ValuePitchingStat).filter(models.ValuePitchingStat.player_id == player_id).all() if s.war is not None]
-            current_career_war = float(np.nansum(owar_vals) + np.nansum(dwar_vals) + np.nansum(war_vals)) if (owar_vals or dwar_vals or war_vals) else 0.0
-        # --- MLBer logic ---
-        is_mlber = (feats["level"] == "MLB" or current_career_war > 0)
-        hall_of_fame_probability = None
-        debut_year = None
-        if is_mlber:
-            # Hall of Fame probability based on career WAR
-            if current_career_war >= 60:
-                hall_of_fame_probability = 0.95
-            elif current_career_war >= 40:
-                hall_of_fame_probability = 0.5
-            elif current_career_war >= 20:
-                hall_of_fame_probability = 0.1
-            else:
-                hall_of_fame_probability = 0.01
-            # Debut year from debut_date if present, else infer from stats
-            debut_date = getattr(player, 'debut_date', None)
-            if debut_date:
-                try:
-                    debut_year = int(str(debut_date)[:4])
-                except Exception:
-                    debut_year = None
-            if not debut_year:
-                # Try to infer from earliest stat season
-                bat_season = db.query(models.StandardBattingStat).filter(models.StandardBattingStat.player_id == player_id).order_by(models.StandardBattingStat.season.asc()).first()
-                pit_season = db.query(models.StandardPitchingStat).filter(models.StandardPitchingStat.player_id == player_id).order_by(models.StandardPitchingStat.season.asc()).first()
-                seasons = []
-                if bat_season and getattr(bat_season, 'season', None):
-                    try:
-                        seasons.append(int(str(bat_season.season)[:4]))
-                    except Exception:
-                        pass
-                if pit_season and getattr(pit_season, 'season', None):
-                    try:
-                        seasons.append(int(str(pit_season.season)[:4]))
-                    except Exception:
-                        pass
-                if seasons:
-                    debut_year = min(seasons)
-            # Projected career WAR = current + nuanced future projection for active players
-            # Try to estimate age from birth_date
-            birth_date = getattr(player, 'birth_date', None)
-            age = None
-            if birth_date:
-                try:
-                    birth_year = int(str(birth_date)[:4])
-                    from datetime import datetime
-                    age = datetime.now().year - birth_year
-                except Exception:
-                    pass
-            # Compute recent WAR (average of last 3 seasons)
-            recent_wars = []
-            for stat_model in [models.ValueBattingStat, models.ValuePitchingStat]:
-                stats = db.query(stat_model).filter(stat_model.player_id == player_id).order_by(stat_model.season.desc()).limit(3).all()
-                for s in stats:
-                    war_val = safe_float(getattr(s, 'war', None))
-                    if war_val:
-                        recent_wars.append(war_val)
-            recent_war = np.mean(recent_wars) if recent_wars else None
-            projected_remaining_years = 0
-            projected_avg_war_per_year = 0.0
-            future_war = 0.0
-            if age is not None and recent_war is not None:
-                if age < 32:
-                    projected_remaining_years = 5
-                    projected_avg_war_per_year = recent_war
-                    future_war = 3 * recent_war + 2 * (recent_war * 0.7)
-                elif age < 35:
-                    projected_remaining_years = 4
-                    projected_avg_war_per_year = recent_war
-                    future_war = 2 * recent_war + 2 * (recent_war * 0.6)
-                elif age < 38:
-                    projected_remaining_years = 2
-                    projected_avg_war_per_year = recent_war
-                    future_war = 1 * recent_war + 1 * (recent_war * 0.5)
-                else:
-                    projected_remaining_years = 1
-                    projected_avg_war_per_year = recent_war * 0.3
-                    future_war = 1 * (recent_war * 0.3)
-            else:
-                # Fallback if no recent WAR or age
-                future_war = 2.0
-                projected_remaining_years = 1
-                projected_avg_war_per_year = 2.0
-            projected_war = current_career_war + future_war
-            # Ceiling/floor based on career WAR
-            if current_career_war >= 60:
-                ceiling = "Hall of Fame"
-                floor = "All-Star"
-            elif current_career_war >= 40:
-                ceiling = "All-Star"
-                floor = "Above-average regular"
-            elif current_career_war >= 20:
-                ceiling = "Above-average regular"
-                floor = "MLB regular"
-            else:
-                ceiling = "MLB regular"
-                floor = "Bench/role player"
-        else:
-            # Use ML model if fitted
-            model_fitted = False
-            try:
-                # Check if model is fitted by accessing estimators_
-                _ = self.overall_rating_model.estimators_
-                model_fitted = True
-            except AttributeError:
-                model_fitted = False
-            
-            # Check feature dimensions and retrain if needed
-            self._check_and_fix_feature_dimensions(db, features.reshape(1, -1))
-            
-            if self.is_fitted and model_fitted:
-                try:
-                    overall_quality = float(self.overall_rating_model.predict([features])[0])
-                    # Use correct X_scaled for player type
-                    if ptype == 'pitcher' and hasattr(self, 'Xp_scaled'):
-                        all_ratings = self.overall_rating_model.predict(self.Xp_scaled)
-                        pct = (all_ratings < overall_quality).sum() / len(all_ratings)
-                    elif ptype in ('position_player', 'dh') and hasattr(self, 'Xh_scaled'):
-                        all_ratings = self.overall_rating_model.predict(self.Xh_scaled)
-                        pct = (all_ratings < overall_quality).sum() / len(all_ratings)
-                    else:
-                        pct = 0.5
-                except ValueError as e:
-                    # If there's still a dimension mismatch, fall back to basic calculation
-                    logger.warning(f"Model prediction failed due to dimension mismatch: {e}")
-                    overall_quality = float(np.mean(features[:10]))
-                    pct = 0.5
-            else:
-                overall_quality = float(np.mean(features[:10]))
-                pct = 0.5
-            pca_score = self._pca_composite_score(features)
-            projected_war = float(np.clip((overall_quality - 40) / 6, 0, 10))
-            mlb_debut_prob_model = float(1 / (1 + np.exp(-0.1 * (overall_quality - 60))))
-            mlb_debut_prob_model = round(mlb_debut_prob_model, 2)
-            if level_factor >= 100:
-                mlb_debut_prob = 1.0
-            else:
-                mlb_debut_prob = mlb_debut_prob_model
-            if overall_quality > 80 or level_factor > 80:
-                eta = 2025
-            elif overall_quality > 65 or level_factor > 60:
-                eta = 2026
-            else:
-                eta = 2027
-            if age_factor < 70 or level_factor < 50:
-                risk = "High"
-            elif age_factor < 80 or level_factor < 70:
-                risk = "Medium"
-            else:
-                risk = "Low"
-            # More realistic ceiling/floor logic
-            if mlb_debut_prob < 0.8 or overall_quality < 60:
-                ceiling = "Bench/role player"
-            elif pct > 0.98 and mlb_debut_prob > 0.95 and overall_quality > 90:
-                ceiling = "Hall of Fame caliber"
-            elif pct > 0.90 and mlb_debut_prob > 0.90 and overall_quality > 80:
-                ceiling = "All-Star caliber"
-            elif pct > 0.75 and mlb_debut_prob > 0.85 and overall_quality > 70:
-                ceiling = "Above-average regular"
-            elif pct > 0.5 and mlb_debut_prob > 0.7 and overall_quality > 60:
-                ceiling = "Average regular"
-            else:
-                ceiling = "Bench/role player"
-            if mlb_debut_prob < 0.5 or overall_quality < 50:
-                floor = "Minor league depth"
-            elif pct > 0.7 and mlb_debut_prob > 0.8 and overall_quality > 60:
-                floor = "MLB regular"
-            elif pct > 0.5 and mlb_debut_prob > 0.6 and overall_quality > 55:
-                floor = "MLB bench player"
-            else:
-                floor = "Minor league depth"
-            debut_year = None
-            hall_of_fame_probability = None
-        # Compose response
-        return {
-            'mlb_debut_probability': 1.0 if is_mlber else mlb_debut_prob,
-            'mlb_debut_probability_model': None if is_mlber else mlb_debut_prob_model if 'mlb_debut_prob_model' in locals() else None,
-            'projected_career_war': projected_war,
-            'current_career_war': current_career_war,
-            'projected_remaining_years': projected_remaining_years if is_mlber else None,
-            'projected_avg_war_per_year': projected_avg_war_per_year if is_mlber else None,
-            'risk_factor': risk if not is_mlber else None,
-            'eta_mlb': debut_year if is_mlber and debut_year else eta if not is_mlber else None,
-            'debut_date': getattr(player, 'debut_date', None) if is_mlber else None,
-            'ceiling_comparison': ceiling,
-            'floor_comparison': floor,
-            'hall_of_fame_probability': hall_of_fame_probability,
-            'debug_features': raw_features.tolist(),
-            'debug_normalized_features': features.tolist(),
-            'pca_composite_score': self._pca_composite_score(features),
-            'ml_model_overall_rating': None if is_mlber else overall_quality if 'overall_quality' in locals() else None,
-            'level': feats["level"],
-            'level_factor': feats["level_factor"],
-        }
-
-    def debug_player_ratings(self, db: Session, player_names: list):
-        """Print raw, normalized, and scaled ratings for a list of player names."""
-        for name in player_names:
-            player = db.query(models.Player).filter(models.Player.full_name.ilike(f"%{name}%")).first()
-            if not player:
-                print(f"[DEBUG] Player not found: {name}")
-                continue
-            player_id = getattr(player, 'id', None)
-            if player_id is None:
-                continue
-            feats = self.extract_player_features(db, int(player_id))
-            if feats is None:
-                print(f"[DEBUG] No features for {name}")
-                continue
-            print(f"\n[DEBUG] Player: {player.full_name} (Type: {self.get_player_type(player)})")
-            print("Raw features:", feats['raw'])
-            print("Normalized features:", feats['normalized'])
-            ratings = self.calculate_mlb_show_ratings(db, int(player_id))
-            print("Ratings:", ratings)
-
-# Global instance
-ml_service = BaseballMLService()
-
-# --- Debug script for player feature/rating inspection ---
-if __name__ == "__main__":
-    from backend.database import SessionLocal
-    db = SessionLocal()
-    sample_names = ["Betts", "Ohtani", "Arenado", "Sale", "Judge", "Cole", "Velasquez"]
-    for name in sample_names:
-        player = db.query(models.Player).filter(models.Player.full_name.ilike(f"%{name}%")).first()
+        player = db.query(Player).filter(Player.id == player_id).first()
         if not player:
-            print(f"[DEBUG] Player not found: {name}")
-            continue
-        player_id = getattr(player, 'id', None)
-        if player_id is None:
-            continue
-        feats = ml_service.extract_player_features(db, int(player_id))
-        if feats is None:
-            print(f"[DEBUG] No features for {name}")
-            continue
-        ratings = ml_service.calculate_mlb_show_ratings(db, int(player_id))
-        print(f"\n[DEBUG] Player: {player.full_name} (Type: {ml_service.get_player_type(player)})")
-        print("Ratings:", ratings)
-    db.close() 
+            return {}
+        ptype = self.get_player_type(player)
+        cached = self.get_cached_features(db, player_id)
+        if cached is not None:
+            feats = cached["normalized"]
+        else:
+            feats_dict = self.extract_player_features(db, player_id)
+            if feats_dict is None:
+                return {}
+            feats = feats_dict["normalized"]
+        # Helper to safely get feature by index
+        def f(idx, default=40.0):
+            try:
+                return float(feats[idx])
+            except Exception:
+                return default
+        # Hitting ratings
+        grades = {
+            'contact_left': f(0),
+            'contact_right': f(0),
+            'power_left': f(5),
+            'power_right': f(5),
+            'vision': f(9),
+            'discipline': f(10),
+            'fielding': f(15),
+            'arm_strength': f(18),
+            'arm_accuracy': f(18),
+            'speed': f(13),
+            'stealing': f(13),
+            'overall_rating': float(np.mean(feats)),
+            'potential_rating': float(np.max(feats)),
+            'confidence_score': float(np.std(feats)),
+            'player_type': ptype,
+        }
+        # Pitcher-specific ratings
+        if ptype == 'pitcher':
+            grades.update({
+                'k_rating': f(0),
+                'bb_rating': 100 - f(1),
+                'gb_rating': f(19),
+                'hr_rating': 100 - f(2),
+                'command_rating': np.mean([f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)])
+            })
+        # If two-way, return both hitting and pitching ratings
+        if ptype == 'two_way':
+            feats_hit = self.extract_player_features(db, player_id, mode='hitting')
+            feats_pit = self.extract_player_features(db, player_id, mode='pitching')
+            def f2(feats, idx, default=40.0):
+                try:
+                    return float(feats["normalized"][idx])
+                except Exception:
+                    return default
+            grades = {
+                'hitting': {
+                    'contact_left': f2(feats_hit, 0),
+                    'contact_right': f2(feats_hit, 0),
+                    'power_left': f2(feats_hit, 5),
+                    'power_right': f2(feats_hit, 5),
+                    'vision': f2(feats_hit, 9),
+                    'discipline': f2(feats_hit, 10),
+                    'fielding': f2(feats_hit, 15),
+                    'arm_strength': f2(feats_hit, 18),
+                    'arm_accuracy': f2(feats_hit, 18),
+                    'speed': f2(feats_hit, 13),
+                    'stealing': f2(feats_hit, 13),
+                    'overall_rating': float(np.mean(feats_hit["normalized"])) if feats_hit else 40.0,
+                    'potential_rating': float(np.max(feats_hit["normalized"])) if feats_hit else 40.0,
+                    'confidence_score': float(np.std(feats_hit["normalized"])) if feats_hit else 0.0,
+                    'player_type': 'position_player',
+                },
+                'pitching': {
+                    'k_rating': f2(feats_pit, 0),
+                    'bb_rating': 100 - f2(feats_pit, 1),
+                    'gb_rating': f2(feats_pit, 19),
+                    'hr_rating': 100 - f2(feats_pit, 2),
+                    'command_rating': np.mean([f2(feats_pit, 3), f2(feats_pit, 4), f2(feats_pit, 5), f2(feats_pit, 20), f2(feats_pit, 21), f2(feats_pit, 22), f2(feats_pit, 23), f2(feats_pit, 7), f2(feats_pit, 9)]),
+                    'overall_rating': float(np.mean(feats_pit["normalized"])) if feats_pit else 40.0,
+                    'potential_rating': float(np.max(feats_pit["normalized"])) if feats_pit else 40.0,
+                    'confidence_score': float(np.std(feats_pit["normalized"])) if feats_pit else 0.0,
+                    'player_type': 'pitcher',
+                },
+                }
+            return {
+                'grades': grades,
+                'player_type': 'two_way',
+                'overall_rating': float(np.mean(feats)),
+                'potential_rating': float(np.max(feats)),
+                'confidence_score': float(np.std(feats)),
+            }
+        return {}
+
+    def store_level_weights(self, db: Session):
+        """Persist the current data_driven_level_weights to the DB."""
+        lw = db.query(LevelWeights).first()
+        if lw and isinstance(getattr(lw, 'weights_json', None), dict):
+            setattr(lw, 'weights_json', self.data_driven_level_weights)
+            setattr(lw, 'last_updated', datetime.datetime.utcnow())
+        else:
+            lw = LevelWeights(weights_json=self.data_driven_level_weights)
+            db.add(lw)
+        db.commit()
+
+    def load_level_weights(self, db: Session):
+        """Load level weights from the DB if present."""
+        lw = db.query(LevelWeights).order_by(LevelWeights.last_updated.desc()).first()
+        if lw is not None and isinstance(getattr(lw, 'weights_json', None), dict):
+            self.data_driven_level_weights = lw.weights_json
+            return True
+        return False
+
+ml_service = BaseballMLService()

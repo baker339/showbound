@@ -9,7 +9,8 @@ import argparse
 from tqdm import tqdm
 # sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database import SessionLocal
-from models import Player, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat
+from models import Player, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat, PlayerFeatures
+from ml_service import ml_service
 
 # Mapping from Baseball Reference headers to model fields
 BREF_TO_MODEL = {
@@ -693,17 +694,32 @@ def extract_minor_league_stats(soup, player_obj, session):
 
 def main():
     parser = argparse.ArgumentParser(description="Ingest BRef player pages into canonical DB.")
-    parser.add_argument('--url_file', type=str, default='backend/mlb_player_urls.txt', help='Path to player URLs file (MLB or AAA)')
+    parser.add_argument('--url_file', type=str, default='player_url_lists/mlb_40man_player_urls.txt', help='Path to player URLs file (MLB 40-man)')
     parser.add_argument('--level', type=str, default=None, help='Override level for all players (e.g., AAA)')
+    parser.add_argument('--resume', action='store_true', help='Resume: skip players already in DB (by bref_id)')
     args = parser.parse_args()
     url_file = args.url_file
     override_level = args.level
+    resume = args.resume
     session = SessionLocal()
     
     # Read URLs
     with open(url_file, 'r') as f:
         player_urls = [line.strip() for line in f if line.strip() and not line.startswith('#')]
     
+    # If resume, get all bref_ids already in the DB
+    existing_bref_ids = set()
+    if resume:
+        existing_bref_ids = set(row[0] for row in session.query(Player.bref_id).filter(Player.bref_id != None).all())
+        print(f"[RESUME] Found {len(existing_bref_ids)} players in DB. Will skip these.")
+
+    # Helper to extract bref_id from URL
+    def extract_bref_id(url):
+        # e.g. https://www.baseball-reference.com/players/x/xxxxxxx.shtml
+        import re
+        m = re.search(r'/players/[a-z]/([a-z0-9]+)\.shtml', url)
+        return m.group(1) if m else None
+
     # Create progress bar
     pbar = tqdm(total=len(player_urls), desc="Processing MLB players")
     
@@ -711,6 +727,11 @@ def main():
     errors = 0
     
     for url in player_urls:
+        bref_id = extract_bref_id(url)
+        if resume and bref_id and bref_id in existing_bref_ids:
+            pbar.set_postfix({'Status': f'SKIP (already in DB)'})
+            pbar.update(1)
+            continue
         try:
             soup = get_soup(url)
             # Extract player name from <h1> tag
@@ -730,6 +751,7 @@ def main():
             if not player_obj:
                 player_obj = Player(
                     full_name=full_name,
+                    bref_id=bref_id,
                     birth_date=bio.get('birth_date'),
                     primary_position=bio.get('primary_position'),
                     bats=bio.get('bats'),
@@ -741,6 +763,12 @@ def main():
                 )
                 session.add(player_obj)
                 session.flush()
+            else:
+                # Patch: always set bref_id if missing
+                if bref_id and not getattr(player_obj, 'bref_id', None):
+                    setattr(player_obj, 'bref_id', bref_id)
+                    session.add(player_obj)
+                    session.commit()
             
             stat_rows = extract_and_insert_stat_tables(soup, player_obj, session)
             
@@ -778,6 +806,39 @@ def main():
     print(f"  Ingested: {ingested}")
     print(f"  Errors: {errors}")
     
+    session.close()
+
+    # --- Compute and store features for all players ---
+    session = SessionLocal()
+    players = session.query(Player).all()
+    for player in players:
+        player_id = getattr(player, 'id', None)
+        if not isinstance(player_id, int):
+            print(f"[WARN] Skipping player with invalid id: {player_id} ({type(player_id)})")
+            continue
+        feats = ml_service.extract_player_features(session, player_id)
+        if feats is None:
+            continue
+        # Upsert PlayerFeatures
+        pf = session.query(PlayerFeatures).filter_by(player_id=player_id).first()
+        if pf:
+            pf.raw_features = feats['raw']
+            pf.normalized_features = feats['normalized']
+        else:
+            pf = PlayerFeatures(
+                player_id=player_id,
+                raw_features=feats['raw'],
+                normalized_features=feats['normalized']
+            )
+            session.add(pf)
+    session.commit()
+    # Refresh in-memory feature cache after updating DB
+    ml_service.refresh_feature_cache(session)
+
+    # --- Compute and store ML level weights ---
+    ml_service.compute_level_weights_from_data(session, force=True)
+    ml_service.store_level_weights(session)
+    print("[ML] Level weights computed and stored.")
     session.close()
 
 if __name__ == '__main__':

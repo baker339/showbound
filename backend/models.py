@@ -544,3 +544,17 @@ class StandardFieldingStat(Base):
     awards = Column(String)
     player = relationship('Player', back_populates='standard_fielding_stats')
     __table_args__ = (UniqueConstraint('player_id', 'season', 'team', 'pos', name='_std_fielding_uc'),)
+
+class PlayerFeatures(Base):
+    __tablename__ = 'player_features'
+    player_id = Column(Integer, ForeignKey('players.id'), primary_key=True)
+    raw_features = Column(PickleType, nullable=False)
+    normalized_features = Column(PickleType, nullable=False)
+    last_updated = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    player = relationship('Player')
+
+class LevelWeights(Base):
+    __tablename__ = 'level_weights'
+    id = Column(Integer, primary_key=True)
+    weights_json = Column(JSON)
+    last_updated = Column(DateTime, default=datetime.datetime.utcnow)
