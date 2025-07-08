@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from database import SessionLocal
-from models import Player, PlayerBio, StatTable, StatRow, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat, PlayerFeatures
+from models import Player, PlayerBio, StatTable, StatRow, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat, PlayerFeatures, PlayerRatings
 from ml_service import ml_service
 import time
+import numpy as np
+import datetime
 
 router = APIRouter()
 
@@ -97,11 +99,11 @@ def get_standard_fielding(player_id: int, db: Session = Depends(get_db)):
 
 @router.get("/player/{player_id}/ratings")
 def get_player_ratings(player_id: int, db: Session = Depends(get_db)):
-    player = db.query(Player).filter(Player.id == player_id).first()
-    ratings = ml_service.calculate_mlb_show_ratings(db, player_id)
-    if not ratings:
-        raise HTTPException(status_code=404, detail="Player or ratings not found")
-    return ratings
+    rating = db.query(PlayerRatings).filter(PlayerRatings.player_id == player_id).first()
+    if not rating:
+        raise HTTPException(status_code=404, detail="Player ratings not found")
+    # Return all fields as dict
+    return {c.name: getattr(rating, c.name) for c in rating.__table__.columns}
 
 @router.get("/player/{player_id}/mlb_comps")
 def get_player_comparisons(player_id: int, db: Session = Depends(get_db)):
@@ -129,19 +131,19 @@ def populate_player_features(db: Session = Depends(get_db)):
     count = 0
     players = db.query(Player).all()
     for player in players:
-        player_id = getattr(player, 'id', None)
-        if not isinstance(player_id, int):
+        pid = getattr(player, 'id', None)
+        if not isinstance(pid, int):
             continue
-        feats = ml_service.extract_player_features(db, player_id)
+        feats = ml_service.extract_player_features(db, pid)
         if feats is None:
             continue
-        pf = db.query(PlayerFeatures).filter_by(player_id=player_id).first()
+        pf = db.query(PlayerFeatures).filter_by(player_id=pid).first()
         if pf:
             pf.raw_features = feats['raw']
             pf.normalized_features = feats['normalized']
         else:
             pf = PlayerFeatures(
-                player_id=player_id,
+                player_id=pid,
                 raw_features=feats['raw'],
                 normalized_features=feats['normalized']
             )
@@ -149,4 +151,121 @@ def populate_player_features(db: Session = Depends(get_db)):
         count += 1
     db.commit()
     ml_service.refresh_feature_cache(db)
-    return {"status": "success", "players_processed": count} 
+    return {"status": "success", "players_processed": count}
+
+@router.get("/players/ratings")
+def get_all_players_ratings(db: Session = Depends(get_db)):
+    # Join Player and PlayerRatings to include full_name
+    ratings = db.query(PlayerRatings, Player.full_name).join(Player, PlayerRatings.player_id == Player.id).all()
+    results = []
+    for rating, full_name in ratings:
+        row = {c.name: getattr(rating, c.name) for c in rating.__table__.columns}
+        row["full_name"] = full_name
+        results.append(row)
+    return results
+
+@router.post("/ratings/populate")
+def populate_player_ratings_and_features(db: Session = Depends(get_db)):
+    count = 0
+    updated = 0
+    players = db.query(Player).all()
+    for player in players:
+        pid = getattr(player, 'id', None)
+        if not isinstance(pid, int):
+            continue
+        # Compute features
+        feats = ml_service.extract_player_features(db, pid)
+        if feats is not None:
+            pf = db.query(PlayerFeatures).filter_by(player_id=pid).first()
+            if pf:
+                pf.raw_features = feats['raw']
+                pf.normalized_features = feats['normalized']
+            else:
+                pf = PlayerFeatures(
+                    player_id=pid,
+                    raw_features=feats['raw'],
+                    normalized_features=feats['normalized']
+                )
+                db.add(pf)
+        # Compute ratings
+        ratings = ml_service.calculate_mlb_show_ratings(db, pid)
+        if ratings is None:
+            continue
+        # Flatten grades for storage
+        grades = ratings.get('grades', {})
+        # For two-way, flatten both hitting and pitching
+        if ratings.get('player_type') == 'two_way':
+            hitting = grades.get('hitting', {})
+            pitching = grades.get('pitching', {})
+            rating_obj = PlayerRatings(
+                player_id=pid,
+                overall_rating=ratings.get('overall_rating'),
+                potential_rating=ratings.get('potential_rating'),
+                confidence_score=ratings.get('confidence_score'),
+                player_type=ratings.get('player_type'),
+                last_updated=datetime.datetime.utcnow(),
+                # Hitting
+                contact_left=hitting.get('contact_left'),
+                contact_right=hitting.get('contact_right'),
+                power_left=hitting.get('power_left'),
+                power_right=hitting.get('power_right'),
+                vision=hitting.get('vision'),
+                discipline=hitting.get('discipline'),
+                fielding=hitting.get('fielding'),
+                arm_strength=hitting.get('arm_strength'),
+                arm_accuracy=hitting.get('arm_accuracy'),
+                speed=hitting.get('speed'),
+                stealing=hitting.get('stealing'),
+                # Pitching
+                k_rating=pitching.get('k_rating'),
+                bb_rating=pitching.get('bb_rating'),
+                gb_rating=pitching.get('gb_rating'),
+                hr_rating=pitching.get('hr_rating'),
+                command_rating=pitching.get('command_rating'),
+                # Historical
+                historical_overalls=None,  # Optionally, could merge both
+                team=player.team,
+                level=player.level
+            )
+        else:
+            rating_obj = PlayerRatings(
+                player_id=pid,
+                overall_rating=ratings.get('overall_rating'),
+                potential_rating=ratings.get('potential_rating'),
+                confidence_score=ratings.get('confidence_score'),
+                player_type=ratings.get('player_type'),
+                last_updated=datetime.datetime.utcnow(),
+                contact_left=grades.get('contact_left'),
+                contact_right=grades.get('contact_right'),
+                power_left=grades.get('power_left'),
+                power_right=grades.get('power_right'),
+                vision=grades.get('vision'),
+                discipline=grades.get('discipline'),
+                fielding=grades.get('fielding'),
+                arm_strength=grades.get('arm_strength'),
+                arm_accuracy=grades.get('arm_accuracy'),
+                speed=grades.get('speed'),
+                stealing=grades.get('stealing'),
+                k_rating=grades.get('k_rating'),
+                bb_rating=grades.get('bb_rating'),
+                gb_rating=grades.get('gb_rating'),
+                hr_rating=grades.get('hr_rating'),
+                command_rating=grades.get('command_rating'),
+                historical_overalls=ratings.get('historical_overalls'),
+                team=player.team,
+                level=player.level
+            )
+        # Upsert logic
+        existing = db.query(PlayerRatings).filter_by(player_id=pid).first()
+        if existing:
+            for attr, value in rating_obj.__dict__.items():
+                if attr.startswith('_'):
+                    continue
+                setattr(existing, attr, value)
+            updated += 1
+        else:
+            db.add(rating_obj)
+            count += 1
+    db.commit()
+    ml_service.refresh_feature_cache(db)
+    return {"status": "success", "players_created": count, "players_updated": updated} 

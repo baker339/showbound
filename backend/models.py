@@ -558,3 +558,35 @@ class LevelWeights(Base):
     id = Column(Integer, primary_key=True)
     weights_json = Column(JSON)
     last_updated = Column(DateTime, default=datetime.datetime.utcnow)
+
+class PlayerRatings(Base):
+    __tablename__ = 'player_ratings'
+    player_id = Column(Integer, ForeignKey('players.id'), primary_key=True)
+    overall_rating = Column(Float)
+    potential_rating = Column(Float)
+    confidence_score = Column(Float)
+    player_type = Column(String)
+    last_updated = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    # Hitting ratings
+    contact_left = Column(Float)
+    contact_right = Column(Float)
+    power_left = Column(Float)
+    power_right = Column(Float)
+    vision = Column(Float)
+    discipline = Column(Float)
+    fielding = Column(Float)
+    arm_strength = Column(Float)
+    arm_accuracy = Column(Float)
+    speed = Column(Float)
+    stealing = Column(Float)
+    # Pitching ratings
+    k_rating = Column(Float)
+    bb_rating = Column(Float)
+    gb_rating = Column(Float)
+    hr_rating = Column(Float)
+    command_rating = Column(Float)
+    # Historical overalls (JSON or text)
+    historical_overalls = Column(JSON)
+    # Optionally, add team, level, etc. for denormalized fast access
+    team = Column(String)
+    level = Column(String)

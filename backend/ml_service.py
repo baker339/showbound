@@ -853,13 +853,13 @@ class BaseballMLService:
             if feats_dict is None:
                 return {}
             feats = feats_dict["normalized"]
-        # Helper to safely get feature by index
+        # Helper to safely get feature by index, always 0-99
         def f(idx, default=40.0):
             try:
-                return float(feats[idx])
+                return float(np.clip(feats[idx], 0, 99))
             except Exception:
                 return default
-        # Hitting ratings
+        # Hitting ratings (indices based on feature vector)
         grades = {
             'contact_left': f(0),
             'contact_right': f(0),
@@ -873,9 +873,66 @@ class BaseballMLService:
             'speed': f(13),
             'stealing': f(13),
         }
-        overall_rating = float(np.mean(feats))
-        potential_rating = float(np.max(feats))
-        confidence_score = float(np.std(feats))
+        # --- Weighted mean for overall ---
+        if ptype == 'pitcher':
+            # Pitcher weights
+            weights = np.array([
+                0.2,  # k_rating (0)
+                0.2,  # bb_rating (1)
+                0.1,  # gb_rating (19)
+                0.1,  # hr_rating (2)
+                0.2,  # command_rating (mean of 3,4,5,20,21,22,23,7,9)
+                0.05, # fielding (15)
+                0.05, # arm_strength (18)
+                0.05, # speed (13)
+                0.05, # stealing (13)
+            ])
+            # Feature vector for pitcher overall
+            pitcher_feats = np.array([
+                f(0),
+                100 - f(1),
+                f(19),
+                100 - f(2),
+                float(np.mean([f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)])),
+                f(15),
+                f(18),
+                f(13),
+                f(13),
+            ])
+            overall_rating = float(np.clip(np.average(pitcher_feats, weights=weights), 0, 99))
+        elif ptype == 'two_way':
+            # Compute both hitting and pitching overalls, then average
+            # Hitting weights
+            hit_weights = np.array([0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.05,0.05,0.1,0.05])
+            hit_feats = np.array([
+                f(0), f(0), f(5), f(5), f(9), f(10), f(15), f(18), f(18), f(13), f(13)
+            ])
+            hitting_overall = float(np.clip(np.average(hit_feats, weights=hit_weights), 0, 99))
+            # Pitching weights (same as above)
+            pit_weights = np.array([
+                0.2, 0.2, 0.1, 0.1, 0.2, 0.05, 0.05, 0.05, 0.05
+            ])
+            pit_feats = np.array([
+                f(0), 100 - f(1), f(19), 100 - f(2), float(np.mean([f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)])), f(15), f(18), f(13), f(13)
+            ])
+            pitching_overall = float(np.clip(np.average(pit_feats, weights=pit_weights), 0, 99))
+            overall_rating = float(np.clip((hitting_overall + pitching_overall) / 2, 0, 99))
+        else:
+            # Position player weights
+            weights = np.array([0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.05,0.05,0.1,0.05])
+            feats_vec = np.array([
+                f(0), f(0), f(5), f(5), f(9), f(10), f(15), f(18), f(18), f(13), f(13)
+            ])
+            overall_rating = float(np.clip(np.average(feats_vec, weights=weights), 0, 99))
+        # --- Potential: project from historical overalls ---
+        historical = self._get_recent_overalls(db, player_id, 'hitting' if ptype != 'pitcher' else 'pitching', n_seasons=5)
+        if historical and len(historical) > 1:
+            trend = (historical[-1] - historical[0]) / (len(historical) - 1)
+            potential_rating = float(np.clip(historical[-1] + trend * 2, 0, 99))
+        else:
+            potential_rating = overall_rating
+        # --- Confidence: stddev of features, scaled to 0-100 ---
+        confidence_score = float(np.clip(100 - np.std(feats), 0, 100))
         # Pitcher-specific ratings
         if ptype == 'pitcher':
             grades['k_rating'] = f(0)
@@ -898,7 +955,7 @@ class BaseballMLService:
             feats_pit = self.extract_player_features(db, player_id, mode='pitching')
             def f2(feats, idx, default=40.0):
                 try:
-                    return float(feats["normalized"][idx])
+                    return float(np.clip(feats["normalized"][idx], 0, 99))
                 except Exception:
                     return default
             hitting_history = self._get_recent_overalls_with_seasons(db, player_id, 'hitting', n_seasons=5)
@@ -916,9 +973,9 @@ class BaseballMLService:
                     'arm_accuracy': f2(feats_hit, 18),
                     'speed': f2(feats_hit, 13),
                     'stealing': f2(feats_hit, 13),
-                    'overall_rating': float(np.mean(feats_hit["normalized"])) if feats_hit else 40.0,
-                    'potential_rating': float(np.max(feats_hit["normalized"])) if feats_hit else 40.0,
-                    'confidence_score': float(np.std(feats_hit["normalized"])) if feats_hit else 0.0,
+                    'overall_rating': float(np.clip(np.mean(feats_hit["normalized"]), 0, 99)) if feats_hit else 40.0,
+                    'potential_rating': float(np.clip(np.max(feats_hit["normalized"]), 0, 99)) if feats_hit else 40.0,
+                    'confidence_score': float(np.clip(100 - np.std(feats_hit["normalized"]), 0, 100)) if feats_hit else 0.0,
                     'player_type': 'position_player',
                     'historical_overalls': hitting_history,
                 },
@@ -928,9 +985,9 @@ class BaseballMLService:
                     'gb_rating': f2(feats_pit, 19),
                     'hr_rating': 100 - f2(feats_pit, 2),
                     'command_rating': float(np.mean([f2(feats_pit, 3), f2(feats_pit, 4), f2(feats_pit, 5), f2(feats_pit, 20), f2(feats_pit, 21), f2(feats_pit, 22), f2(feats_pit, 23), f2(feats_pit, 7), f2(feats_pit, 9)])),
-                    'overall_rating': float(np.mean(feats_pit["normalized"])) if feats_pit else 40.0,
-                    'potential_rating': float(np.max(feats_pit["normalized"])) if feats_pit else 40.0,
-                    'confidence_score': float(np.std(feats_pit["normalized"])) if feats_pit else 0.0,
+                    'overall_rating': float(np.clip(np.mean(feats_pit["normalized"]), 0, 99)) if feats_pit else 40.0,
+                    'potential_rating': float(np.clip(np.max(feats_pit["normalized"]), 0, 99)) if feats_pit else 40.0,
+                    'confidence_score': float(np.clip(100 - np.std(feats_pit["normalized"]), 0, 100)) if feats_pit else 0.0,
                     'player_type': 'pitcher',
                     'historical_overalls': pitching_history,
                 },

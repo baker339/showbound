@@ -10,11 +10,12 @@ import bs4
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import String, Integer, Float
 from database import SessionLocal
-from models import Player, StandardBattingStat, StandardPitchingStat, StandardFieldingStat
+from models import Player, StandardBattingStat, StandardPitchingStat, StandardFieldingStat, PlayerFeatures
 from tqdm import tqdm
 import json
 import re
 from urllib.parse import urlparse, parse_qs
+from ml_service import ml_service
 
 # Mapping from BRef register table headers to model fields
 # Updated for register page structure
@@ -343,4 +344,32 @@ def main():
     session.close()
 
 if __name__ == '__main__':
-    main() 
+    main()
+    # --- Recompute and store features for all players ---
+    session = SessionLocal()
+    players = session.query(Player).all()
+    for player in players:
+        player_id = getattr(player, 'id', None)
+        if not isinstance(player_id, int):
+            continue
+        feats = ml_service.extract_player_features(session, player_id)
+        if feats is None:
+            continue
+        pf = session.query(PlayerFeatures).filter_by(player_id=player_id).first()
+        if pf:
+            pf.raw_features = feats['raw']
+            pf.normalized_features = feats['normalized']
+        else:
+            pf = PlayerFeatures(
+                player_id=player_id,
+                raw_features=feats['raw'],
+                normalized_features=feats['normalized']
+            )
+            session.add(pf)
+    session.commit()
+    ml_service.refresh_feature_cache(session)
+    # --- Recompute and store ML level weights ---
+    ml_service.compute_level_weights_from_data(session, force=True)
+    ml_service.store_level_weights(session)
+    print("[ML] Level weights computed and stored.")
+    session.close() 
