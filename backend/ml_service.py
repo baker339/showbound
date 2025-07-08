@@ -733,30 +733,24 @@ class BaseballMLService:
                     growths.append(growth)
         if growths:
             avg_growth = float(np.mean(growths))
-            print(f"[DEBUG] Similar player growths for player {player_id} ({mode}): {growths}, avg_growth={avg_growth}")
             return avg_growth
-        print(f"[DEBUG] No similar player growth found for player {player_id} ({mode})")
         return None
 
     def _calculate_trend_potential(self, overalls: list, current_overall: float, scaling: float = 2.0, db: Optional[Session] = None, player_id: Optional[int] = None, mode: Optional[str] = None) -> float:
-        print(f"[DEBUG] _calculate_trend_potential: player_id={player_id}, mode={mode}, overalls={overalls}, current_overall={current_overall}")
         if not overalls or len(overalls) < 2:
             trend = 0
             if db is not None and player_id is not None and mode is not None:
                 avg_growth = self._get_similar_player_growth(db, player_id, mode)
                 if avg_growth is not None:
                     potential = min(99, current_overall + avg_growth)
-                    print(f"[DEBUG] Only one season. Using similar player avg_growth={avg_growth}. potential={potential}")
                     return potential
         else:
             trend = overalls[-1] - overalls[0]
             if trend < 0:
                 # Use max overall if trend is negative
                 potential = max(overalls + [current_overall])
-                print(f"[DEBUG] Negative trend. Using max overall. trend={trend}, potential={potential}")
                 return potential
         potential = min(99, current_overall + scaling * trend)
-        print(f"[DEBUG] Trend={trend}, scaling={scaling}, potential={potential}")
         return potential
 
     def _get_recent_overalls(self, db, player_id: int, mode: str, n_seasons: int = 3) -> list:
@@ -791,7 +785,7 @@ class BaseballMLService:
                 bb_rating = 100 - (norm[1] if len(norm) > 1 else 40.0)
                 gb_rating = norm[19] if len(norm) > 19 else 40.0
                 hr_rating = 100 - (norm[2] if len(norm) > 2 else 40.0)
-                command_rating = np.mean([norm[3], norm[4], norm[5], norm[20], norm[21], norm[22], norm[23], norm[7], norm[9]]) if len(norm) > 23 else 40.0
+                command_rating = float(np.mean([norm[3], norm[4], norm[5], norm[20], norm[21], norm[22], norm[23], norm[7], norm[9]]))
                 tool_vals = [float(x) if x is not None else 40.0 for x in [k_rating, bb_rating, gb_rating, hr_rating, command_rating]]
                 top_tools = sorted(tool_vals, reverse=True)[:3]
                 overall = np.mean(top_tools)
@@ -835,7 +829,7 @@ class BaseballMLService:
                 bb_rating = 100 - (norm[1] if len(norm) > 1 else 40.0)
                 gb_rating = norm[19] if len(norm) > 19 else 40.0
                 hr_rating = 100 - (norm[2] if len(norm) > 2 else 40.0)
-                command_rating = np.mean([norm[3], norm[4], norm[5], norm[20], norm[21], norm[22], norm[23], norm[7], norm[9]]) if len(norm) > 23 else 40.0
+                command_rating = float(np.mean([norm[3], norm[4], norm[5], norm[20], norm[21], norm[22], norm[23], norm[7], norm[9]]))
                 tool_vals = [float(x) if x is not None else 40.0 for x in [k_rating, bb_rating, gb_rating, hr_rating, command_rating]]
                 top_tools = sorted(tool_vals, reverse=True)[:3]
                 overall = np.mean(top_tools)
@@ -878,20 +872,26 @@ class BaseballMLService:
             'arm_accuracy': f(18),
             'speed': f(13),
             'stealing': f(13),
-            'overall_rating': float(np.mean(feats)),
-            'potential_rating': float(np.max(feats)),
-            'confidence_score': float(np.std(feats)),
-            'player_type': ptype,
         }
+        overall_rating = float(np.mean(feats))
+        potential_rating = float(np.max(feats))
+        confidence_score = float(np.std(feats))
         # Pitcher-specific ratings
         if ptype == 'pitcher':
-            grades.update({
-                'k_rating': f(0),
-                'bb_rating': 100 - f(1),
-                'gb_rating': f(19),
-                'hr_rating': 100 - f(2),
-                'command_rating': np.mean([f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)])
-            })
+            grades['k_rating'] = f(0)
+            grades['bb_rating'] = 100 - f(1)
+            grades['gb_rating'] = f(19)
+            grades['hr_rating'] = 100 - f(2)
+            grades['command_rating'] = float(np.mean([f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)]))
+            historical_overalls = self._get_recent_overalls_with_seasons(db, player_id, 'pitching', n_seasons=5)
+            return {
+                'grades': grades,
+                'player_type': ptype,
+                'overall_rating': overall_rating,
+                'potential_rating': potential_rating,
+                'confidence_score': confidence_score,
+                'historical_overalls': historical_overalls,
+            }
         # If two-way, return both hitting and pitching ratings
         if ptype == 'two_way':
             feats_hit = self.extract_player_features(db, player_id, mode='hitting')
@@ -901,6 +901,8 @@ class BaseballMLService:
                     return float(feats["normalized"][idx])
                 except Exception:
                     return default
+            hitting_history = self._get_recent_overalls_with_seasons(db, player_id, 'hitting', n_seasons=5)
+            pitching_history = self._get_recent_overalls_with_seasons(db, player_id, 'pitching', n_seasons=5)
             grades = {
                 'hitting': {
                     'contact_left': f2(feats_hit, 0),
@@ -918,27 +920,38 @@ class BaseballMLService:
                     'potential_rating': float(np.max(feats_hit["normalized"])) if feats_hit else 40.0,
                     'confidence_score': float(np.std(feats_hit["normalized"])) if feats_hit else 0.0,
                     'player_type': 'position_player',
+                    'historical_overalls': hitting_history,
                 },
                 'pitching': {
                     'k_rating': f2(feats_pit, 0),
                     'bb_rating': 100 - f2(feats_pit, 1),
                     'gb_rating': f2(feats_pit, 19),
                     'hr_rating': 100 - f2(feats_pit, 2),
-                    'command_rating': np.mean([f2(feats_pit, 3), f2(feats_pit, 4), f2(feats_pit, 5), f2(feats_pit, 20), f2(feats_pit, 21), f2(feats_pit, 22), f2(feats_pit, 23), f2(feats_pit, 7), f2(feats_pit, 9)]),
+                    'command_rating': float(np.mean([f2(feats_pit, 3), f2(feats_pit, 4), f2(feats_pit, 5), f2(feats_pit, 20), f2(feats_pit, 21), f2(feats_pit, 22), f2(feats_pit, 23), f2(feats_pit, 7), f2(feats_pit, 9)])),
                     'overall_rating': float(np.mean(feats_pit["normalized"])) if feats_pit else 40.0,
                     'potential_rating': float(np.max(feats_pit["normalized"])) if feats_pit else 40.0,
                     'confidence_score': float(np.std(feats_pit["normalized"])) if feats_pit else 0.0,
                     'player_type': 'pitcher',
+                    'historical_overalls': pitching_history,
                 },
-                }
+            }
             return {
                 'grades': grades,
                 'player_type': 'two_way',
-                'overall_rating': float(np.mean(feats)),
-                'potential_rating': float(np.max(feats)),
-                'confidence_score': float(np.std(feats)),
+                'overall_rating': overall_rating,
+                'potential_rating': potential_rating,
+                'confidence_score': confidence_score,
             }
-        return {}
+        # For position players (not pitcher or two_way), return grades
+        historical_overalls = self._get_recent_overalls_with_seasons(db, player_id, 'hitting', n_seasons=5)
+        return {
+            'grades': grades,
+            'player_type': ptype,
+            'overall_rating': overall_rating,
+            'potential_rating': potential_rating,
+            'confidence_score': confidence_score,
+            'historical_overalls': historical_overalls,
+        }
 
     def store_level_weights(self, db: Session):
         """Persist the current data_driven_level_weights to the DB."""
@@ -958,5 +971,197 @@ class BaseballMLService:
             self.data_driven_level_weights = lw.weights_json
             return True
         return False
+
+    def predict_mlb_success(self, db, player_id: int):
+        player = db.query(Player).filter(Player.id == player_id).first()
+        if not player:
+            return None
+        ptype = self.get_player_type(player)
+        level = getattr(player, 'level', None)
+        age = getattr(player, 'age', None) or 24  # fallback if missing
+        # --- Career WAR calculation ---
+        def get_batting_career_war():
+            war = 0.0
+            # Get all seasons for this player (assume all are MLB)
+            seasons = set(
+                row.season for row in db.query(StandardBattingStat)
+                .filter(StandardBattingStat.player_id == player_id).all()
+                if row.season is not None
+            )
+            for row in db.query(ValueBattingStat).filter(ValueBattingStat.player_id == player_id).all():
+                if getattr(row, 'season', None) in seasons:
+                    war += getattr(row, 'war', 0.0) or 0.0
+            return war
+        def get_pitching_career_war():
+            war = 0.0
+            pitching_seasons = set(
+                row.season for row in db.query(StandardPitchingStat)
+                .filter(StandardPitchingStat.player_id == player_id).all()
+                if row.season is not None
+            )
+            for row in db.query(ValuePitchingStat).filter(ValuePitchingStat.player_id == player_id).all():
+                if getattr(row, 'season', None) in pitching_seasons:
+                    war += getattr(row, 'war', 0.0) or 0.0
+            return war
+        # --- Debut year ---
+        def get_mlb_debut_year():
+            years = []
+            for row in db.query(ValueBattingStat).filter(ValueBattingStat.player_id == player_id).all():
+                if row.season is not None:
+                    years.append(row.season)
+            for row in db.query(ValuePitchingStat).filter(ValuePitchingStat.player_id == player_id).all():
+                if row.season is not None:
+                    years.append(row.season)
+            return min(years) if years else None
+        # --- Similar players for comps ---
+        similar = self.get_similar_players(db, player_id, k=5)
+        def get_similar_career_wars():
+            wars = []
+            for comp in similar:
+                comp_id = comp.get('mlb_player_id')
+                if not comp_id:
+                    continue
+                # For each comp, sum MLB WAR (batting + pitching) using MLB seasons only
+                # Batting
+                mlb_bat_seasons = set(
+                    row.season for row in db.query(StandardBattingStat)
+                    .filter(StandardBattingStat.player_id == comp_id).all()
+                    if row.season is not None
+                )
+                bwar = 0.0
+                for row in db.query(ValueBattingStat).filter(ValueBattingStat.player_id == comp_id).all():
+                    if getattr(row, 'season', None) in mlb_bat_seasons:
+                        bwar += getattr(row, 'war', 0.0) or 0.0
+                # Pitching
+                mlb_pit_seasons = set(
+                    row.season for row in db.query(StandardPitchingStat)
+                    .filter(StandardPitchingStat.player_id == comp_id).all()
+                    if row.season is not None
+                )
+                pwar = 0.0
+                for row in db.query(ValuePitchingStat).filter(ValuePitchingStat.player_id == comp_id).all():
+                    if getattr(row, 'season', None) in mlb_pit_seasons:
+                        pwar += getattr(row, 'war', 0.0) or 0.0
+                wars.append(bwar + pwar)
+            return wars
+        # --- Hall of Fame probability (simple sigmoid on career WAR) ---
+        def hof_prob(war):
+            import math
+            # 60+ WAR is a strong candidate, 80+ is near lock
+            return float(1 / (1 + math.exp(-0.12 * (war - 60))))
+        # --- Main logic ---
+        is_mlb = (level == 'MLB')
+        # Career WAR
+        if ptype == 'pitcher':
+            career_war = get_pitching_career_war()
+        elif ptype == 'position_player':
+            career_war = get_batting_career_war()
+        elif ptype == 'two_way':
+            career_war = get_batting_career_war() + get_pitching_career_war()
+        else:
+            career_war = 0.0
+        # Projected career WAR: current + 10% per year until age 32 (simple model)
+        years_left = max(0, 32 - (age or 24))
+        projected_career_war = career_war * (1 + 0.10 * years_left)
+        # Similar player comps for ceiling/floor
+        comp_wars = get_similar_career_wars()
+        ceiling = max(comp_wars) if comp_wars else projected_career_war * 1.5
+        floor = min(comp_wars) if comp_wars else projected_career_war * 0.5
+        # MLB debut year
+        debut_year = get_mlb_debut_year()
+        # --- Risk factor ---
+        spread = ceiling - floor
+        risk_factor = "Low"
+        if spread > 20:
+            risk_factor = "High"
+        elif spread > 10:
+            risk_factor = "Medium"
+        # For non-MLB, bump risk if level is low
+        if not is_mlb:
+            if level in ("A", "A+", "Rk", "HS", "NCAA"):
+                risk_factor = "High"
+            elif level in ("AA",):
+                if risk_factor == "Low":
+                    risk_factor = "Medium"
+        # --- MLB player response ---
+        if is_mlb:
+            return {
+                "mlb_debut_probability": None,
+                "eta_mlb": None,
+                "debut_year": debut_year,
+                "current_career_war": career_war,
+                "projected_career_war": projected_career_war,
+                "hall_of_fame_probability": hof_prob(career_war),
+                "ceiling_comparison": "Hall of Famer" if ceiling > 60 else "All-Star" if ceiling > 30 else "MLB Regular",
+                "floor_comparison": "Replacement Level" if floor < 0 else "Quad-A Player" if floor < 5 else "MLB Regular",
+                "ceiling": ceiling,
+                "floor": floor,
+                "risk_factor": risk_factor,
+            }
+        # --- Non-MLB player response ---
+        # Debut probability: base on level and overall
+        level_probs = {"AAA": 0.7, "AA": 0.4, "A+": 0.2, "A": 0.1, "Rk": 0.05, "HS": 0.01, "NCAA": 0.05}
+        base_prob = level_probs.get(level or "", 0.05)
+        # Use overall rating as a multiplier (normalized to 0-1)
+        overall = None
+        feats = self.extract_player_features(db, player_id)
+        if feats:
+            overall = float(np.mean(feats["normalized"]))
+        overall_mult = (overall or 40.0 - 40.0) / 60.0  # 40-100 mapped to 0-1
+        mlb_debut_probability = min(0.99, max(0.01, base_prob + 0.5 * overall_mult))
+        # ETA: average debut age of comps minus current age, or age+2 if no comps
+        comp_ages = []
+        for comp in similar:
+            comp_id = comp.get('mlb_player_id')
+            if not comp_id:
+                continue
+            comp_debut = None
+            for row in db.query(StandardBattingStat).filter(StandardBattingStat.player_id == comp_id, StandardBattingStat.level == 'MLB').all():
+                if row.season:
+                    comp_debut = row.season
+                    break
+            for row in db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == comp_id, StandardPitchingStat.level == 'MLB').all():
+                if row.season:
+                    comp_debut = row.season
+                    break
+            comp_player = db.query(Player).filter(Player.id == comp_id).first()
+            comp_age = getattr(comp_player, 'age', None)
+            if comp_debut and comp_age:
+                comp_ages.append(comp_debut - (comp_age or 24))
+        if comp_ages:
+            eta_mlb = age + int(np.mean(comp_ages))
+        else:
+            eta_mlb = age + 2
+        # Projected career WAR: average of comps
+        projected_career_war = float(np.mean(comp_wars)) if comp_wars else 2.0
+        ceiling = max(comp_wars) if comp_wars else projected_career_war * 1.5
+        floor = min(comp_wars) if comp_wars else projected_career_war * 0.5
+        # --- Risk factor ---
+        spread = ceiling - floor
+        risk_factor = "Low"
+        if spread > 20:
+            risk_factor = "High"
+        elif spread > 10:
+            risk_factor = "Medium"
+        # For non-MLB, bump risk if level is low
+        if not is_mlb:
+            if level in ("A", "A+", "Rk", "HS", "NCAA"):
+                risk_factor = "High"
+            elif level in ("AA",):
+                if risk_factor == "Low":
+                    risk_factor = "Medium"
+        return {
+            "mlb_debut_probability": mlb_debut_probability,
+            "eta_mlb": eta_mlb,
+            "debut_year": None,
+            "current_career_war": 0.0,
+            "projected_career_war": projected_career_war,
+            "hall_of_fame_probability": 0.0,
+            "ceiling_comparison": "Hall of Famer" if ceiling > 60 else "All-Star" if ceiling > 30 else "MLB Regular",
+            "floor_comparison": "Replacement Level" if floor < 0 else "Quad-A Player" if floor < 5 else "MLB Regular",
+            "ceiling": ceiling,
+            "floor": floor,
+            "risk_factor": risk_factor,
+        }
 
 ml_service = BaseballMLService()

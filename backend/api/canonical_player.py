@@ -21,9 +21,7 @@ def get_player_bio(player_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Player not found")
     bio_fields = {k: getattr(player, k) for k in [
         'full_name', 'birth_date', 'primary_position', 'positions_raw', 'positions', 'bats', 'throws', 'height', 'weight', 'team', 'source_url']}
-    extra_bio = db.query(PlayerBio).filter(PlayerBio.player_id == player_id).all()
-    extra_bio_fields = [{"field_name": b.field_name, "field_value": b.field_value, "source_url": b.source_url} for b in extra_bio]
-    return {"player_id": player_id, "bio": bio_fields, "extra_bio": extra_bio_fields}
+    return {"player_id": player_id, "bio": bio_fields}
 
 @router.get("/player/{player_id}/stat_tables")
 def get_player_stat_tables(player_id: int, db: Session = Depends(get_db)):
@@ -99,6 +97,7 @@ def get_standard_fielding(player_id: int, db: Session = Depends(get_db)):
 
 @router.get("/player/{player_id}/ratings")
 def get_player_ratings(player_id: int, db: Session = Depends(get_db)):
+    player = db.query(Player).filter(Player.id == player_id).first()
     ratings = ml_service.calculate_mlb_show_ratings(db, player_id)
     if not ratings:
         raise HTTPException(status_code=404, detail="Player or ratings not found")
@@ -114,12 +113,12 @@ def get_player_comparisons(player_id: int, db: Session = Depends(get_db)):
     print(f"[PERF] /mlb_comps for player {player_id} took {elapsed:.2f}s")
     return {"comparisons": comps}
 
-# @router.get("/player/{player_id}/prediction")
-# def get_player_prediction(player_id: int, db: Session = Depends(get_db)):
-#     prediction = ml_service.predict_mlb_success(db, player_id)
-#     if not prediction:
-#         raise HTTPException(status_code=404, detail="Player or prediction not found")
-#     return prediction
+@router.get("/player/{player_id}/prediction")
+def get_player_prediction(player_id: int, db: Session = Depends(get_db)):
+    prediction = ml_service.predict_mlb_success(db, player_id)
+    if not prediction:
+        raise HTTPException(status_code=404, detail="Player or prediction not found")
+    return prediction
 
 @router.get("/model/metrics")
 def get_model_metrics():

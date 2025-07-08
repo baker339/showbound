@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import PlayerCard from './PlayerCard';
 import { mapBackendGradesToPlayerRatings } from '../lib/ratings';
 import type { PlayerRatings } from './PlayerCard';
@@ -35,8 +35,11 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [tab, setTab] = React.useState<string>('ratings');
+  const lastFetchedId = useRef<number | null>(null);
 
   useEffect(() => {
+    if (lastFetchedId.current === playerId) return;
+    lastFetchedId.current = playerId;
     setLoading(true);
     setError(null);
     fetch(`${API_BASE_URL}/player/${playerId}/ratings`)

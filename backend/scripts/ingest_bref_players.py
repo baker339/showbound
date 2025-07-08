@@ -216,6 +216,7 @@ def get_soup(url):
     try:
         resp = requests.get(url, headers=HEADERS)
         resp.raise_for_status()
+        resp.encoding = 'utf-8'  # Force UTF-8 decoding to prevent mojibake
         return BeautifulSoup(resp.text, 'html.parser')
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 429:
@@ -270,9 +271,6 @@ def parse_and_insert_stat(session, player_obj, table_type, headers, rows, Model)
         else:
             use_headers = headers
             use_row = row
-        # if 'fielding' in table_type:
-        #     print(f"[DEBUG] Fielding headers: {use_headers}")
-        #     print(f"[DEBUG] Fielding row: {use_row}")
         data = dict(zip(use_headers, use_row))
         # Map Baseball Reference headers to model fields
         data = {mapping.get(k, k): v for k, v in data.items()}
@@ -310,9 +308,9 @@ def parse_and_insert_stat(session, player_obj, table_type, headers, rows, Model)
                     else:
                         typ = type(col.type.python_type)
                     if typ is int:
-                        filtered_data[k] = int(float(value))
+                        filtered_data[k] = str(int(float(value)))
                     elif typ is float:
-                        filtered_data[k] = float(value)
+                        filtered_data[k] = str(float(value))
                     elif typ is str:
                         filtered_data[k] = str(value).strip()
                 except Exception:
@@ -434,116 +432,122 @@ def extract_and_insert_stat_tables(soup, player_obj, session):
             comment_soup = BeautifulSoup(comment, 'html.parser')
             for table_id, _ in STAT_TABLE_IDS:
                 if dom_tables[table_id] is None:
-                    table = comment_soup.find('table', id=table_id)
-                    if table:
-                        dom_tables[table_id] = table
+                    # Only call find if comment_soup supports it
+                    if hasattr(comment_soup, 'find'):
+                        table = comment_soup.find('table', id=table_id)
+                        if table:
+                            dom_tables[table_id] = table
     for (table_id, Model) in STAT_TABLE_IDS:
         table = dom_tables[table_id]
         if not table:
             continue
         thead = table.find('thead')
-        headers = [th.get_text(strip=True) for th in thead.find_all('th')]
+        if not thead:
+            print(f"[WARN] No <thead> found for table {table_id}")
+            continue
+        header_rows = thead.find_all('tr')
+        if not header_rows:
+            print(f"[WARN] No header rows found in <thead> for table {table_id}")
+            continue
+        if len(header_rows) > 1:
+            header_tr = header_rows[1]  # Use the second row (actual column names)
+        else:
+            header_tr = header_rows[0]  # Fallback: use the only row
+        headers = [th.get_text(strip=True) for th in header_tr.find_all('th')]
         tbody = table.find('tbody')
-        for tr in tbody.find_all('tr'):
-            if tr.get('class') and ('over_header' in tr.get('class') or 'thead' in tr.get('class')):
-                continue
-            row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
-            if not row or len(row) < len(headers) // 2:
-                continue
-            if 'Season' in headers:
-                idx = headers.index('Season')
-                use_headers = headers[idx:]
-                if len(row) >= len(use_headers):
-                    use_row = row[-len(use_headers):]
-                else:
+        debug_fielding = table_id == 'players_standard_fielding'
+        debug_adv_pitching = table_id == 'players_advanced_pitching'
+        if isinstance(tbody, Tag):
+            for tr in tbody.find_all('tr'):
+                if not isinstance(tr, Tag):
                     continue
-            else:
-                use_headers = headers
-                use_row = row
-            mapping = None
-            if 'batting' in table_id:
-                if 'advanced' in table_id:
-                    mapping = BREF_TO_MODEL['advanced_batting']
-                elif 'value' in table_id:
-                    mapping = BREF_TO_MODEL['value_batting']
+                tr_class = tr.get('class') or []
+                if 'over_header' in tr_class or 'thead' in tr_class:
+                    continue
+                row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])] if isinstance(tr, Tag) else []
+                if not row or len(row) < len(headers) // 2:
+                    continue
+                mapping = None
+                if 'batting' in table_id:
+                    if 'advanced' in table_id:
+                        mapping = BREF_TO_MODEL['advanced_batting']
+                    elif 'value' in table_id:
+                        mapping = BREF_TO_MODEL['value_batting']
+                    else:
+                        mapping = BREF_TO_MODEL['batting']
+                elif 'pitching' in table_id:
+                    if 'advanced' in table_id:
+                        mapping = BREF_TO_MODEL['advanced_pitching']
+                    elif 'value' in table_id:
+                        mapping = BREF_TO_MODEL['value_pitching']
+                    else:
+                        mapping = BREF_TO_MODEL['pitching']
+                elif 'fielding' in table_id:
+                    mapping = BREF_TO_MODEL['fielding']
                 else:
-                    mapping = BREF_TO_MODEL['batting']
-            elif 'pitching' in table_id:
-                if 'advanced' in table_id:
-                    mapping = BREF_TO_MODEL['advanced_pitching']
-                elif 'value' in table_id:
-                    mapping = BREF_TO_MODEL['value_pitching']
-                else:
-                    mapping = BREF_TO_MODEL['pitching']
-            elif 'fielding' in table_id:
-                mapping = BREF_TO_MODEL['fielding']
-            else:
-                mapping = {}
-            data = dict(zip(use_headers, use_row))
-            data = {mapping.get(k, k): v for k, v in data.items()}
-            data['player_id'] = player_obj.id
-            if 'team' in data and data['team']:
-                data['team'] = normalize_team(data['team'])
-            season = data.get('season')
-            team = data.get('team')
-            pos = data.get('pos')
-            if not season or not season.isdigit() or len(season) != 4:
-                continue
-            if not team:
-                continue
-            if table_id == 'players_standard_fielding':
+                    mapping = {}
+                data = {str(k): (str(v) if v is not None else None) for k, v in zip(headers, row)}
+                data = {mapping.get(k, k): v for k, v in data.items()}
+                data['player_id'] = player_obj.id
+                if 'team' in data and data['team']:
+                    data['team'] = normalize_team(data['team'])
+                season = data.get('season')
+                team = data.get('team')
+                pos = data.get('pos')
+                if not season or not season.isdigit() or len(season) != 4:
+                    continue
+                if not team:
+                    continue
                 if pos is None or pos.strip() == '' or pos.strip().lower() == 'total':
                     continue
-            # Skip aggregate/combined team rows (e.g., 2Tm, 3Tm, 4Tm, TOT, TOTAL, 2TMS, 3TMS, etc.)
-            import re
-            raw_team = data.get('team') if 'team' in data else None
-            if raw_team is not None and (re.match(r'^[0-9]+TMS?$', str(raw_team).strip().upper()) or str(raw_team).strip().upper() in ['TOT', 'TOTAL']):
-                continue
-            # Only normalize if not aggregate
-            if 'team' in data and data['team']:
-                data['team'] = normalize_team(data['team'])
-            valid_fields = set(str(c.name) for c in Model.__table__.columns)
-            filtered_data = {str(k): (v if v != '' else None) for k, v in data.items() if str(k) in valid_fields}
-            for col in Model.__table__.columns:
-                k = col.name
-                value = filtered_data.get(k, None)
-                if value is not None:
-                    try:
-                        if isinstance(col.type.python_type, type):
-                            typ = col.type.python_type
-                        else:
-                            typ = type(col.type.python_type)
-                        if typ is int:
-                            filtered_data[k] = int(float(value))
-                        elif typ is float:
-                            filtered_data[k] = float(value)
-                        elif typ is str:
-                            filtered_data[k] = str(value).strip()
-                    except Exception:
-                        pass
-            if 'batting' in table_id or 'pitching' in table_id:
-                unique_keys = ['player_id', 'season', 'team']
-            elif 'fielding' in table_id:
-                unique_keys = ['player_id', 'season', 'team', 'pos']
-            else:
-                unique_keys = ['player_id']
-            filter_kwargs = {}
-            for k in unique_keys:
-                v = filtered_data.get(k)
-                if v is None:
-                    filter_kwargs[k] = None
+                import re
+                raw_team = data.get('team') if 'team' in data else None
+                if raw_team is not None and (re.match(r'^[0-9]+TMS?$', str(raw_team).strip().upper()) or str(raw_team).strip().upper() in ['TOT', 'TOTAL']):
+                    continue
+                if 'team' in data and data['team']:
+                    data['team'] = normalize_team(data['team'])
+                valid_fields = set(str(c.name) for c in Model.__table__.columns)
+                filtered_data = {str(k): (str(v) if v not in (None, '') else None) for k, v in data.items() if str(k) in valid_fields}
+                for col in Model.__table__.columns:
+                    k = col.name
+                    value = filtered_data.get(k, None)
+                    if value is not None:
+                        try:
+                            if isinstance(col.type.python_type, type):
+                                typ = col.type.python_type
+                            else:
+                                typ = type(col.type.python_type)
+                            if typ is int:
+                                filtered_data[k] = str(int(float(value)))
+                            elif typ is float:
+                                filtered_data[k] = str(float(value))
+                            elif typ is str:
+                                filtered_data[k] = str(value).strip()
+                        except Exception:
+                            pass
+                if 'batting' in table_id or 'pitching' in table_id:
+                    unique_keys = ['player_id', 'season', 'team']
+                elif 'fielding' in table_id:
+                    unique_keys = ['player_id', 'season', 'team', 'pos']
                 else:
-                    filter_kwargs[k] = str(v).strip()
-            exists = session.query(Model).filter_by(**filter_kwargs).first()
-            if exists:
-                continue
-            stat_obj = Model(**filtered_data)
-            session.add(stat_obj)
-            # For team assignment and stat display
-            stat_row = {'season': int(season), 'team': team, 'table': table_id, 'g': int(data.get('g', 0) or 0), 'pa': int(data.get('pa', 0) or 0), 'ip': float(data.get('ip', 0) or 0)}
-            candidate_stat_rows.append(stat_row)
-            all_stat_rows.append({**data, 'table': table_id})
-            found_any = True
+                    unique_keys = ['player_id']
+                filter_kwargs = {}
+                for k in unique_keys:
+                    v = filtered_data.get(k)
+                    if v is None:
+                        filter_kwargs[k] = None
+                    else:
+                        filter_kwargs[k] = str(v).strip()
+                exists = session.query(Model).filter_by(**filter_kwargs).first()
+                if exists:
+                    continue
+                stat_obj = Model(**filtered_data)
+                session.add(stat_obj)
+                # For team assignment and stat display
+                stat_row = {'season': int(season), 'team': team, 'table': table_id, 'g': int(data.get('g', 0) or 0), 'pa': int(data.get('pa', 0) or 0), 'ip': float(data.get('ip', 0) or 0)}
+                candidate_stat_rows.append(stat_row)
+                all_stat_rows.append({**data, 'table': table_id})
+                found_any = True
     # --- Team assignment logic ---
     if candidate_stat_rows:
         # Deduplicate by (season, team, table)
@@ -585,7 +589,7 @@ def extract_and_insert_stat_tables(soup, player_obj, session):
 def extract_minor_league_stats(soup, player_obj, session):
     """Extract minor league stats from register page and add to existing player"""
     # Look for "Minor Lg Stats" link
-    minor_lg_link = soup.find('a', text='Minor Lg Stats')
+    minor_lg_link = soup.find('a', string='Minor Lg Stats')
     if not minor_lg_link:
         return False
     
@@ -621,71 +625,73 @@ def extract_minor_league_stats(soup, player_obj, session):
             
             # Find the header row that contains the actual column names
             header_row = None
-            for row in table.find_all('tr'):
-                if not isinstance(row, Tag):
-                    continue
-                cells = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
-                if 'Year' in cells and 'Tm' in cells:
-                    header_row = cells
-                    break
+            if isinstance(table, Tag):
+                for row in table.find_all('tr'):
+                    if not isinstance(row, Tag):
+                        continue
+                    cells = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
+                    if 'Year' in cells and 'Tm' in cells:
+                        header_row = cells
+                        break
             
             if not header_row:
                 continue
             
             # Process data rows
-            for row in table.find_all('tr'):
-                if not isinstance(row, Tag):
-                    continue
-                
-                cells = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
-                if len(cells) != len(header_row):
-                    continue
-                
-                # Skip header rows
-                if cells[0] == 'Year' or not cells[0].isdigit():
-                    continue
-                
-                data = dict(zip(header_row, cells))
-                
-                # Skip aggregate rows
-                if 'Tm' in data and ('Teams' in data['Tm'] or 'Lgs' in data['Tm']):
-                    continue
-                
-                # Use 'Lev' for level, 'Tm' for team
-                row_level = data.get('Lev')
-                team = data.get('Tm')
-                season = data.get('Year')
-                
-                if not (row_level and team and season):
-                    continue
-                
-                # Map fields using MAP
-                mapped = {MAP.get(k, k): v for k, v in data.items()}
-                
-                # Only pass valid fields to the model
-                valid_fields = set(str(c.name) for c in Model.__table__.columns)
-                filtered = {str(k): (v if v != '' else None) for k, v in mapped.items() if str(k) in valid_fields}
-                
-                # Ensure player_id is set
-                filtered['player_id'] = player_obj.id
-                
-                # Normalize team name
-                if 'team' in filtered and filtered['team']:
-                    filtered['team'] = normalize_team(filtered['team'])
-                
-                # Check if stat already exists
-                if 'season' in filtered and 'team' in filtered:
-                    existing = session.query(Model).filter_by(
-                        player_id=player_obj.id,
-                        season=filtered['season'],
-                        team=filtered['team']
-                    ).first()
-                    if existing:
+            if isinstance(table, Tag):
+                for row in table.find_all('tr'):
+                    if not isinstance(row, Tag):
                         continue
-                
-                stat_obj = Model(**filtered)
-                session.add(stat_obj)
-                stats_found = True
+                    
+                    cells = [td.get_text(strip=True) for td in row.find_all(['td', 'th'])]
+                    if len(cells) != len(header_row):
+                        continue
+                    
+                    # Skip header rows
+                    if cells[0] == 'Year' or not cells[0].isdigit():
+                        continue
+                    
+                    data = dict(zip(header_row, cells))
+                    
+                    # Skip aggregate rows
+                    if 'Tm' in data and ('Teams' in data['Tm'] or 'Lgs' in data['Tm']):
+                        continue
+                    
+                    # Use 'Lev' for level, 'Tm' for team
+                    row_level = data.get('Lev')
+                    team = data.get('Tm')
+                    season = data.get('Year')
+                    
+                    if not (row_level and team and season):
+                        continue
+                    
+                    # Map fields using MAP
+                    mapped = {MAP.get(k, k): v for k, v in data.items()}
+                    
+                    # Only pass valid fields to the model
+                    valid_fields = set(str(c.name) for c in Model.__table__.columns)
+                    filtered = {str(k): (v if v != '' else None) for k, v in mapped.items() if str(k) in valid_fields}
+                    
+                    # Ensure player_id is set
+                    filtered['player_id'] = player_obj.id
+                    
+                    # Normalize team name
+                    if 'team' in filtered and filtered['team']:
+                        filtered['team'] = normalize_team(filtered['team'])
+                    
+                    # Check if stat already exists
+                    if 'season' in filtered and 'team' in filtered:
+                        existing = session.query(Model).filter_by(
+                            player_id=player_obj.id,
+                            season=filtered['season'],
+                            team=filtered['team']
+                        ).first()
+                        if existing:
+                            continue
+                    
+                    stat_obj = Model(**filtered)
+                    session.add(stat_obj)
+                    stats_found = True
         
         return stats_found
             
@@ -704,7 +710,7 @@ def main():
     session = SessionLocal()
     
     # Read URLs
-    with open(url_file, 'r') as f:
+    with open(url_file, 'r', encoding='utf-8') as f:
         player_urls = [line.strip() for line in f if line.strip() and not line.startswith('#')]
     
     # If resume, get all bref_ids already in the DB
@@ -737,6 +743,8 @@ def main():
             # Extract player name from <h1> tag
             name_tag = soup.find('h1')
             full_name = name_tag.get_text(strip=True) if name_tag else None
+            if isinstance(full_name, bytes):
+                full_name = full_name.decode('utf-8', errors='replace')
             if full_name:
                 full_name = unicodedata.normalize('NFKC', full_name)
             # Extract bio from meta
