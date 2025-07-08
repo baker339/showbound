@@ -28,6 +28,7 @@ const theme = createTheme({
 
 const navLinks = [
   { label: 'Home', href: '/' },
+  { label: 'Trending', href: '/players/ratings' },
   { label: 'Compare', href: '/compare' },
   { label: 'About', href: '/about' },
   // { label: 'Teams', href: '/teams' },
@@ -39,7 +40,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <head>
-        <title>Show Bound</title>
+        <title>ShowBound Analytics</title>
       </head>
       <body className={inter.className}>
         <ThemeProvider theme={theme}>
@@ -61,7 +62,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 href="/"
                 sx={{ flexGrow: 1, fontWeight: 700, color: '#171717', letterSpacing: 1, textDecoration: 'none', cursor: 'pointer' }}
               >
-                Show Bound
+                ShowBound
               </Typography>
               <Box sx={{ display: { xs: 'none', sm: 'flex' }, gap: 1 }}>
                 {navLinks.map(link => (

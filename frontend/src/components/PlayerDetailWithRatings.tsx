@@ -3,7 +3,7 @@ import PlayerCard from './PlayerCard';
 import { mapBackendGradesToPlayerRatings } from '../lib/ratings';
 import type { PlayerRatings } from './PlayerCard';
 import { Box, Typography, Tabs, Tab } from '@mui/material';
-import PlayerTrendsChart from './PlayerTrendsChart';
+import PlayerTrendsChart from '../components/PlayerTrendsChart';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -48,16 +48,18 @@ const PlayerDetailWithRatings: React.FC<PlayerDetailWithRatingsProps> = ({
         return res.json();
       })
       .then(data => {
-        // Handle two-way player response
-        if (data.grades && data.grades.hitting && data.grades.pitching) {
+        // Handle two-way player response (if you want to split hitting/pitching fields)
+        if (data.player_type === 'two_way') {
+          // Assume hitting and pitching fields are present in the same object, or split if you have a naming convention
+          // For now, just map the same data to both
           setRatings({
-            hitting: mapBackendGradesToPlayerRatings(data.grades.hitting, data),
-            pitching: mapBackendGradesToPlayerRatings(data.grades.pitching, data),
+            hitting: mapBackendGradesToPlayerRatings(data),
+            pitching: mapBackendGradesToPlayerRatings(data),
             player_type: 'two_way',
-            overall_rating: data.grades.hitting.overall_rating ?? data.grades.pitching.overall_rating ?? 0,
+            overall_rating: data.overall_rating ?? 0,
           });
         } else {
-          setRatings(mapBackendGradesToPlayerRatings(data.grades, data));
+          setRatings(mapBackendGradesToPlayerRatings(data));
         }
         setLoading(false);
       })

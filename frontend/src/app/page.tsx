@@ -306,6 +306,21 @@ export default function PlayersPage() {
     return ['all', ...Array.from(levels).sort()];
   };
 
+  // Auto-select player if playerId is in the query string
+  useEffect(() => {
+    if (!players || players.length === 0) return;
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const playerId = params.get('playerId');
+    if (playerId) {
+      const player = players.find((p: Player) => String(p.id) === playerId);
+      if (player) {
+        handlePlayerClick(player);
+      }
+    }
+    // eslint-disable-next-line
+  }, [players]);
+
   if (isLoading) {
     return (
       <Container maxWidth="xl" sx={{ mt: 4 }}>

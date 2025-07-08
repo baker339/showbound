@@ -281,9 +281,9 @@ const PlayerCard: React.FC<PlayerCardProps> = ({
             </Typography>
           </Box>
           <Chip
-            label={`${Math.round(ratings.confidence_score * 100)}% Confidence`}
+            label={`${Math.round(ratings.confidence_score)}% Confidence`}
             size="small"
-            color={ratings.confidence_score > 0.8 ? 'success' : ratings.confidence_score > 0.6 ? 'warning' : 'error'}
+            color={ratings.confidence_score > 80 ? 'success' : ratings.confidence_score > 60 ? 'warning' : 'error'}
           />
         </Box>
       </CardContent>
