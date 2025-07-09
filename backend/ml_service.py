@@ -194,10 +194,10 @@ class BaseballMLService:
             return
         if force or not hasattr(self, 'data_driven_level_weights') or not isinstance(getattr(self, 'data_driven_level_weights', None), dict) or not getattr(self, 'data_driven_level_weights', None):
             print("[ML] Computing data-driven level weights...")
-
+            
             # Get all players with stats
             players = db.query(Player).all()
-
+            
             # Collect stats by level
             level_stats = {
                 'MLB': {'batting': [], 'pitching': []},
@@ -207,18 +207,18 @@ class BaseballMLService:
                 'A': {'batting': [], 'pitching': []},
                 'Rk': {'batting': [], 'pitching': []}
             }
-
+            
             # Collect batting stats by level
             for player in players:
                 player_level = getattr(player, 'level', None)
                 if not player_level or player_level not in level_stats:
                     continue
-
+                    
                 # Get latest batting stats
                 bat_stats = db.query(StandardBattingStat).filter(
                     StandardBattingStat.player_id == player.id
                 ).order_by(StandardBattingStat.season.desc()).first()
-
+                
                 if bat_stats:
                     # Collect key batting metrics
                     stats_dict = {
@@ -234,12 +234,12 @@ class BaseballMLService:
                     # Only include if player had meaningful playing time
                     if stats_dict['pa'] > 50:
                         level_stats[player_level]['batting'].append(stats_dict)
-
+                
                 # Get latest pitching stats
                 pit_stats = db.query(StandardPitchingStat).filter(
                     StandardPitchingStat.player_id == player.id
                 ).order_by(StandardPitchingStat.season.desc()).first()
-
+                
                 if pit_stats:
                     # Collect key pitching metrics
                     stats_dict = {
@@ -253,13 +253,13 @@ class BaseballMLService:
                     # Only include if player had meaningful innings
                     if stats_dict['ip'] > 10:
                         level_stats[player_level]['pitching'].append(stats_dict)
-
+            
             # Calculate level weights based on performance differences
             level_weights = {}
-
+            
             # Use MLB as baseline (1.0)
             level_weights['MLB'] = 1.0
-
+            
             # Calculate batting weights
             mlb_batting_avg = self._calculate_avg_performance(level_stats['MLB']['batting'])
             if mlb_batting_avg:
@@ -270,7 +270,7 @@ class BaseballMLService:
                             # Calculate weight based on performance ratio
                             batting_weight = self._calculate_performance_ratio(level_avg, mlb_batting_avg)
                             level_weights[level] = batting_weight
-
+            
             # Calculate pitching weights (inverse for ERA - lower is better)
             mlb_pitching_avg = self._calculate_avg_performance(level_stats['MLB']['pitching'])
             if mlb_pitching_avg:
@@ -285,14 +285,14 @@ class BaseballMLService:
                                 level_weights[level] = (level_weights[level] + pitching_weight) / 2
                             else:
                                 level_weights[level] = pitching_weight
-
+            
             # Ensure weights are reasonable (between 0.1 and 1.0)
             for level in level_weights:
                 level_weights[level] = max(0.1, min(1.0, level_weights[level]))
-
+            
             # Store the computed weights
             self.data_driven_level_weights = level_weights
-
+            
             print(f"[ML] Data-driven level weights computed: {level_weights}")
     
     def _safe_float(self, val):
@@ -367,116 +367,100 @@ class BaseballMLService:
         start = time.time()
         """Extract feature vector for a player, split by mode: 'hitting', 'pitching', or 'all' (default). If season is provided, fetch stats for that season."""
         try:
-            # Use cache if available and not requesting a specific season
-            if season is None and hasattr(self, '_feature_cache') and player_id in self._feature_cache:
-                cached = self._feature_cache[player_id]
-                if mode == 'all':
-                    return {
-                        "raw": cached["raw"],
-                        "normalized": cached["normalized"],
-                        "level": None,  # Not cached
-                        "level_factor": None  # Not cached
-                    }
             player = db.query(Player).filter(Player.id == player_id).first()
             if not player:
                 return None
-            player_name = getattr(player, 'full_name', f'ID {player_id}')
-            # Get the player's level for weighting
             player_level = getattr(player, 'level', 'MLB')
             level_factor = self._get_level_factor(player_level)
-            # Helper to fetch stat for a given model and season
-            def get_stat(model, season):
-                if season is not None:
-                    return db.query(model).filter(model.player_id == player_id, model.season == season).first()
-                else:
-                    return db.query(model).filter(model.player_id == player_id).order_by(model.season.desc()).first()
-            adv_bat = get_stat(AdvancedBattingStat, season)
-            val_bat = get_stat(ValueBattingStat, season)
-            std_bat = get_stat(StandardBattingStat, season)
-            adv_pit = get_stat(AdvancedPitchingStat, season)
-            val_pit = get_stat(ValuePitchingStat, season)
-            std_pit = get_stat(StandardPitchingStat, season)
-            std_field = get_stat(StandardFieldingStat, season)
-            def safe_float(val):
-                try:
-                    return float(val)
-                except (TypeError, ValueError):
-                    return 0.0
-            def level_weighted_stat(val, is_percentage=False):
-                raw_val = safe_float(val)
-                if raw_val == 0:
-                    return 0.0
+            # Helper to aggregate all available values for a feature
+            def aggregate_feature(model, attr, is_percentage=False):
+                q = db.query(model).filter(model.player_id == player_id)
+                vals = [getattr(row, attr, None) for row in q.all() if getattr(row, attr, None) not in (None, "")]
+                def safe_float(val):
+                    try:
+                        return float(val)
+                    except (TypeError, ValueError):
+                        return None
+                vals = [safe_float(v) for v in vals if safe_float(v) is not None]
+                if not vals:
+                    return None
+                mean_val = float(np.mean([v for v in vals if v is not None]))
                 if is_percentage:
-                    if raw_val > 0.5:
-                        diff_from_avg = raw_val - 0.250
+                    if mean_val > 0.5:
+                        diff_from_avg = mean_val - 0.250
                         weighted_diff = diff_from_avg * level_factor
                         return 0.250 + weighted_diff
                     else:
-                        return raw_val * level_factor
+                        return mean_val * level_factor
                 else:
-                    return raw_val * level_factor
+                    return mean_val * level_factor
+            # Build feature lists
             hitting_feats = [
-                level_weighted_stat(getattr(std_bat, 'ba', None), is_percentage=True),
-                level_weighted_stat(getattr(std_bat, 'obp', None), is_percentage=True),
-                level_weighted_stat(getattr(adv_bat, 'ev', None)),
-                level_weighted_stat(getattr(adv_bat, 'hardh_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(adv_bat, 'ld_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(std_bat, 'slg', None), is_percentage=True),
-                level_weighted_stat(getattr(adv_bat, 'iso', None), is_percentage=True),
-                level_weighted_stat(getattr(adv_bat, 'barrel_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(std_bat, 'hr', None)),
-                level_weighted_stat(getattr(adv_bat, 'bb_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(adv_bat, 'so_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(std_bat, 'bb', None)),
-                level_weighted_stat(getattr(std_bat, 'so', None)),
-                level_weighted_stat(getattr(std_bat, 'sb', None)),
-                level_weighted_stat(getattr(val_bat, 'rbaser', None)),
+                aggregate_feature(StandardBattingStat, 'ba', is_percentage=True),
+                aggregate_feature(StandardBattingStat, 'obp', is_percentage=True),
+                aggregate_feature(AdvancedBattingStat, 'ev'),
+                aggregate_feature(AdvancedBattingStat, 'hardh_pct', is_percentage=True),
+                aggregate_feature(AdvancedBattingStat, 'ld_pct', is_percentage=True),
+                aggregate_feature(StandardBattingStat, 'slg', is_percentage=True),
+                aggregate_feature(AdvancedBattingStat, 'iso', is_percentage=True),
+                aggregate_feature(AdvancedBattingStat, 'barrel_pct', is_percentage=True),
+                aggregate_feature(StandardBattingStat, 'hr'),
+                aggregate_feature(AdvancedBattingStat, 'bb_pct', is_percentage=True),
+                aggregate_feature(AdvancedBattingStat, 'so_pct', is_percentage=True),
+                aggregate_feature(StandardBattingStat, 'bb'),
+                aggregate_feature(StandardBattingStat, 'so'),
+                aggregate_feature(StandardBattingStat, 'sb'),
+                aggregate_feature(ValueBattingStat, 'rbaser'),
             ]
             fielding_feats = [
-                level_weighted_stat(getattr(std_field, 'fld_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(std_field, 'rdrs', None)),
-                level_weighted_stat(getattr(std_field, 'rtot', None)),
-                level_weighted_stat(getattr(std_field, 'a', None)),
-                level_weighted_stat(getattr(std_field, 'dp', None)),
+                aggregate_feature(StandardFieldingStat, 'fld_pct', is_percentage=True),
+                aggregate_feature(StandardFieldingStat, 'rdrs'),
+                aggregate_feature(StandardFieldingStat, 'rtot'),
+                aggregate_feature(StandardFieldingStat, 'a'),
+                aggregate_feature(StandardFieldingStat, 'dp'),
             ]
             pitching_feats = [
-                level_weighted_stat(getattr(adv_pit, 'k_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(adv_pit, 'bb_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(adv_pit, 'hr_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(std_pit, 'era', None)),
-                level_weighted_stat(getattr(std_pit, 'fip', None)),
-                level_weighted_stat(getattr(std_pit, 'whip', None)),
-                level_weighted_stat(getattr(std_pit, 'era_plus', None)),
-                level_weighted_stat(getattr(val_pit, 'war', None)),
-                level_weighted_stat(getattr(val_pit, 'waa', None)),
-                level_weighted_stat(getattr(val_pit, 'raa', None)),
-                level_weighted_stat(getattr(std_pit, 'so', None)),
-                level_weighted_stat(getattr(std_pit, 'bb', None)),
-                level_weighted_stat(getattr(std_pit, 'ip', None)),
-                level_weighted_stat(getattr(std_pit, 'gs', None)),
-                level_weighted_stat(getattr(std_pit, 'so9', None)),
-                level_weighted_stat(getattr(std_pit, 'bb9', None)),
-                level_weighted_stat(getattr(std_pit, 'hr9', None)),
-                level_weighted_stat(getattr(std_pit, 'h9', None)),
-                level_weighted_stat(getattr(adv_pit, 'babip', None), is_percentage=True),
-                level_weighted_stat(getattr(adv_pit, 'lob_pct', None), is_percentage=True),
-                level_weighted_stat(getattr(adv_pit, 'era_minus', None)),
-                level_weighted_stat(getattr(adv_pit, 'fip_minus', None)),
-                level_weighted_stat(getattr(adv_pit, 'xfip_minus', None)),
-                level_weighted_stat(getattr(adv_pit, 'siera', None)),
-                level_weighted_stat(getattr(val_pit, 'wpa', None)),
-                level_weighted_stat(getattr(val_pit, 're24', None)),
-                level_weighted_stat(getattr(val_pit, 'cwpa', None)),
+                aggregate_feature(AdvancedPitchingStat, 'k_pct', is_percentage=True),
+                aggregate_feature(AdvancedPitchingStat, 'bb_pct', is_percentage=True),
+                aggregate_feature(AdvancedPitchingStat, 'hr_pct', is_percentage=True),
+                aggregate_feature(StandardPitchingStat, 'era'),
+                aggregate_feature(StandardPitchingStat, 'fip'),
+                aggregate_feature(StandardPitchingStat, 'whip'),
+                aggregate_feature(StandardPitchingStat, 'era_plus'),
+                aggregate_feature(ValuePitchingStat, 'war'),
+                aggregate_feature(ValuePitchingStat, 'waa'),
+                aggregate_feature(ValuePitchingStat, 'raa'),
+                aggregate_feature(StandardPitchingStat, 'so'),
+                aggregate_feature(StandardPitchingStat, 'bb'),
+                aggregate_feature(StandardPitchingStat, 'ip'),
+                aggregate_feature(StandardPitchingStat, 'gs'),
+                aggregate_feature(StandardPitchingStat, 'so9'),
+                aggregate_feature(StandardPitchingStat, 'bb9'),
+                aggregate_feature(StandardPitchingStat, 'hr9'),
+                aggregate_feature(StandardPitchingStat, 'h9'),
+                aggregate_feature(AdvancedPitchingStat, 'babip', is_percentage=True),
+                aggregate_feature(AdvancedPitchingStat, 'lob_pct', is_percentage=True),
+                aggregate_feature(AdvancedPitchingStat, 'era_minus'),
+                aggregate_feature(AdvancedPitchingStat, 'fip_minus'),
+                aggregate_feature(AdvancedPitchingStat, 'xfip_minus'),
+                aggregate_feature(AdvancedPitchingStat, 'siera'),
+                aggregate_feature(ValuePitchingStat, 'wpa'),
+                aggregate_feature(ValuePitchingStat, 're24'),
+                aggregate_feature(ValuePitchingStat, 'cwpa'),
             ]
+            # Combine features based on mode
             if mode == 'hitting':
-                feats = np.array(hitting_feats + fielding_feats + [level_factor * 100, 1.0])
+                feats = hitting_feats + fielding_feats + [level_factor * 100, 1.0]
             elif mode == 'pitching':
-                feats = np.array(pitching_feats + fielding_feats + [level_factor * 100, 1.0])
+                feats = pitching_feats + fielding_feats + [level_factor * 100, 1.0]
             else:
-                feats = np.array(hitting_feats + fielding_feats + pitching_feats + [level_factor * 100, 1.0])
-            normed = self._normalize_features(feats)
-            # print(f"[PERF] extract_player_features for player {player_id} (mode={mode}, season={season}) took {elapsed:.2f}s")
-            return {"raw": feats, "normalized": normed, "level": player_level, "level_factor": level_factor}
+                feats = hitting_feats + fielding_feats + pitching_feats + [level_factor * 100, 1.0]
+            # Only keep present features for normalization and rating
+            present_feats = [f for f in feats if f is not None]
+            normed = self._normalize_features(np.array([f if f is not None else 0.0 for f in feats]))
+            # Confidence: percent of features present
+            confidence = 100.0 * len(present_feats) / len(feats) if feats else 0.0
+            return {"raw": np.array([f if f is not None else 0.0 for f in feats]), "normalized": normed, "level": player_level, "level_factor": level_factor, "confidence": confidence, "present": [f is not None for f in feats]}
         except Exception as e:
             logger.error(f"Error extracting features for player {player_id}: {e}")
             return None
@@ -845,18 +829,16 @@ class BaseballMLService:
         if not player:
             return {}
         ptype = self.get_player_type(player)
-        cached = self.get_cached_features(db, player_id)
-        if cached is not None:
-            feats = cached["normalized"]
-        else:
-            feats_dict = self.extract_player_features(db, player_id)
-            if feats_dict is None:
-                return {}
-            feats = feats_dict["normalized"]
-        # Helper to safely get feature by index, always 0-99
+        feats_dict = self.extract_player_features(db, player_id)
+        if feats_dict is None:
+            return {}
+        feats = feats_dict["normalized"]
+        present = feats_dict.get("present", [True]*len(feats))
+        # Only use present features for overall calculation
         def f(idx, default=40.0):
             try:
-                return float(np.clip(feats[idx], 0, 99))
+                val = float(np.clip(feats[idx], 0, 99)) if present[idx] else None
+                return val if val is not None else default
             except Exception:
                 return default
         # Hitting ratings (indices based on feature vector)
@@ -890,10 +872,10 @@ class BaseballMLService:
             # Feature vector for pitcher overall
             pitcher_feats = np.array([
                 f(0),
-                100 - f(1),
+                100 - (f(1) if f(1) is not None else 40.0),
                 f(19),
-                100 - f(2),
-                float(np.mean([f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)])),
+                100 - (f(2) if f(2) is not None else 40.0),
+                float(np.mean([x for x in [f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)] if x is not None])),
                 f(15),
                 f(18),
                 f(13),
@@ -913,7 +895,7 @@ class BaseballMLService:
                 0.2, 0.2, 0.1, 0.1, 0.2, 0.05, 0.05, 0.05, 0.05
             ])
             pit_feats = np.array([
-                f(0), 100 - f(1), f(19), 100 - f(2), float(np.mean([f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)])), f(15), f(18), f(13), f(13)
+                f(0), 100 - (f(1) if f(1) is not None else 40.0), f(19), 100 - (f(2) if f(2) is not None else 40.0), float(np.mean([x for x in [f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)] if x is not None])), f(15), f(18), f(13), f(13)
             ])
             pitching_overall = float(np.clip(np.average(pit_feats, weights=pit_weights), 0, 99))
             overall_rating = float(np.clip((hitting_overall + pitching_overall) / 2, 0, 99))
@@ -936,10 +918,10 @@ class BaseballMLService:
         # Pitcher-specific ratings
         if ptype == 'pitcher':
             grades['k_rating'] = f(0)
-            grades['bb_rating'] = 100 - f(1)
+            grades['bb_rating'] = 100 - (f(1) if f(1) is not None else 40.0)
             grades['gb_rating'] = f(19)
-            grades['hr_rating'] = 100 - f(2)
-            grades['command_rating'] = float(np.mean([f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)]))
+            grades['hr_rating'] = 100 - (f(2) if f(2) is not None else 40.0)
+            grades['command_rating'] = float(np.mean([x for x in [f(3), f(4), f(5), f(20), f(21), f(22), f(23), f(7), f(9)] if x is not None]))
             historical_overalls = self._get_recent_overalls_with_seasons(db, player_id, 'pitching', n_seasons=5)
             return {
                 'grades': grades,
@@ -981,10 +963,10 @@ class BaseballMLService:
                 },
                 'pitching': {
                     'k_rating': f2(feats_pit, 0),
-                    'bb_rating': 100 - f2(feats_pit, 1),
+                    'bb_rating': 100 - (f2(feats_pit, 1) if f2(feats_pit, 1) is not None else 40.0),
                     'gb_rating': f2(feats_pit, 19),
-                    'hr_rating': 100 - f2(feats_pit, 2),
-                    'command_rating': float(np.mean([f2(feats_pit, 3), f2(feats_pit, 4), f2(feats_pit, 5), f2(feats_pit, 20), f2(feats_pit, 21), f2(feats_pit, 22), f2(feats_pit, 23), f2(feats_pit, 7), f2(feats_pit, 9)])),
+                    'hr_rating': 100 - (f2(feats_pit, 2) if f2(feats_pit, 2) is not None else 40.0),
+                    'command_rating': float(np.mean([x for x in [f2(feats_pit, 3), f2(feats_pit, 4), f2(feats_pit, 5), f2(feats_pit, 20), f2(feats_pit, 21), f2(feats_pit, 22), f2(feats_pit, 23), f2(feats_pit, 7), f2(feats_pit, 9)] if x is not None])),
                     'overall_rating': float(np.clip(np.mean(feats_pit["normalized"]), 0, 99)) if feats_pit else 40.0,
                     'potential_rating': float(np.clip(np.max(feats_pit["normalized"]), 0, 99)) if feats_pit else 40.0,
                     'confidence_score': float(np.clip(100 - np.std(feats_pit["normalized"]), 0, 100)) if feats_pit else 0.0,
@@ -1148,7 +1130,7 @@ class BaseballMLService:
                 "debut_year": debut_year,
                 "current_career_war": career_war,
                 "projected_career_war": projected_career_war,
-                "hall_of_fame_probability": hof_prob(career_war),
+                "hall_of_fame_probability": hof_prob(projected_career_war),
                 "ceiling_comparison": "Hall of Famer" if ceiling > 60 else "All-Star" if ceiling > 30 else "MLB Regular",
                 "floor_comparison": "Replacement Level" if floor < 0 else "Quad-A Player" if floor < 5 else "MLB Regular",
                 "ceiling": ceiling,
