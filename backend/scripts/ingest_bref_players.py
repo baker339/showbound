@@ -455,8 +455,8 @@ def extract_and_insert_stat_tables(soup, player_obj, session):
             header_tr = header_rows[0]  # Fallback: use the only row
         headers = [th.get_text(strip=True) for th in header_tr.find_all('th')]
         tbody = table.find('tbody')
-        debug_fielding = table_id == 'players_standard_fielding'
-        debug_adv_pitching = table_id == 'players_advanced_pitching'
+        row_count = 0
+        skipped_rows = 0
         if isinstance(tbody, Tag):
             for tr in tbody.find_all('tr'):
                 if not isinstance(tr, Tag):
@@ -466,6 +466,7 @@ def extract_and_insert_stat_tables(soup, player_obj, session):
                     continue
                 row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])] if isinstance(tr, Tag) else []
                 if not row or len(row) < len(headers) // 2:
+                    skipped_rows += 1
                     continue
                 mapping = None
                 if 'batting' in table_id:
@@ -495,14 +496,20 @@ def extract_and_insert_stat_tables(soup, player_obj, session):
                 team = data.get('team')
                 pos = data.get('pos')
                 if not season or not season.isdigit() or len(season) != 4:
+                    skipped_rows += 1
                     continue
                 if not team:
+                    skipped_rows += 1
                     continue
-                if pos is None or pos.strip() == '' or pos.strip().lower() == 'total':
-                    continue
+                # Only require pos for fielding tables
+                if 'fielding' in table_id:
+                    if pos is None or pos.strip() == '' or pos.strip().lower() == 'total':
+                        skipped_rows += 1
+                        continue
                 import re
                 raw_team = data.get('team') if 'team' in data else None
                 if raw_team is not None and (re.match(r'^[0-9]+TMS?$', str(raw_team).strip().upper()) or str(raw_team).strip().upper() in ['TOT', 'TOTAL']):
+                    skipped_rows += 1
                     continue
                 if 'team' in data and data['team']:
                     data['team'] = normalize_team(data['team'])
@@ -525,6 +532,17 @@ def extract_and_insert_stat_tables(soup, player_obj, session):
                                 filtered_data[k] = str(value).strip()
                         except Exception:
                             pass
+                # Set the level for each stat row
+                # For MLB stats (lg == 'AL' or 'NL'), set level='MLB'. For MiLB, use the value if present. Default to 'MLB'.
+                lg_val = str(data.get('lg')).upper() if data.get('lg') is not None else ''
+                level_val = data.get('level') or data.get('Lev')
+                norm_level = normalize_level(level_val) if level_val else None
+                if norm_level:
+                    filtered_data['level'] = norm_level
+                elif lg_val in ('AL', 'NL'):
+                    filtered_data['level'] = 'MLB'
+                else:
+                    filtered_data['level'] = 'MLB'  # fallback
                 if 'batting' in table_id or 'pitching' in table_id:
                     unique_keys = ['player_id', 'season', 'team']
                 elif 'fielding' in table_id:
@@ -540,6 +558,7 @@ def extract_and_insert_stat_tables(soup, player_obj, session):
                         filter_kwargs[k] = str(v).strip()
                 exists = session.query(Model).filter_by(**filter_kwargs).first()
                 if exists:
+                    skipped_rows += 1
                     continue
                 stat_obj = Model(**filtered_data)
                 session.add(stat_obj)
@@ -548,6 +567,7 @@ def extract_and_insert_stat_tables(soup, player_obj, session):
                 candidate_stat_rows.append(stat_row)
                 all_stat_rows.append({**data, 'table': table_id})
                 found_any = True
+                row_count += 1
     # --- Team assignment logic ---
     if candidate_stat_rows:
         # Deduplicate by (season, team, table)
@@ -697,6 +717,32 @@ def extract_minor_league_stats(soup, player_obj, session):
             
     except Exception as e:
         return False
+
+def normalize_level(level_str):
+    if not level_str:
+        return None
+    s = str(level_str).strip().upper()
+    if s in ["MAJ", "MAJORS", "MAJOR LEAGUE", "MLB"]:
+        return "MLB"
+    if s in ["AAA", "TRIPLE-A"]:
+        return "AAA"
+    if s in ["AA", "DOUBLE-A"]:
+        return "AA"
+    if s in ["A+", "A-ADVANCED", "HIGH-A"]:
+        return "A+"
+    if s in ["A", "SINGLE-A", "LOW-A"]:
+        return "A"
+    if s in ["RK", "ROOKIE"]:
+        return "Rk"
+    if s in ["INDEPENDENT"]:
+        return "Indy"
+    if s in ["FOREIGN"]:
+        return "Foreign"
+    if s in ["COLLEGE", "NCAA"]:
+        return "NCAA"
+    if s in ["HS", "HIGH SCHOOL"]:
+        return "HS"
+    return s.title()
 
 def main():
     parser = argparse.ArgumentParser(description="Ingest BRef player pages into canonical DB.")

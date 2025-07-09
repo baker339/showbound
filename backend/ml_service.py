@@ -377,10 +377,10 @@ class BaseballMLService:
                 if season is not None and hasattr(model, 'season'):
                     q = q.filter(model.season == str(season))
                 vals = [getattr(row, attr, None) for row in q.all() if getattr(row, attr, None) not in (None, "")]
-                def safe_float(val):
-                    try:
-                        return float(val)
-                    except (TypeError, ValueError):
+            def safe_float(val):
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
                         return None
                 vals = [safe_float(v) for v in vals if safe_float(v) is not None]
                 if not vals:
@@ -832,7 +832,7 @@ class BaseballMLService:
         ptype = self.get_player_type(player)
         feats_dict = self.extract_player_features(db, player_id)
         if feats_dict is None:
-            return {}
+                return {}
         feats = feats_dict["normalized"]
         present = feats_dict.get("present", [True]*len(feats))
         # Only use present features for overall calculation
@@ -1012,6 +1012,19 @@ class BaseballMLService:
             return True
         return False
 
+    def _hof_probability(self, projected_career_war: float, player_type: str = "position_player") -> float:
+        # Thresholds based on historical HOF inductees
+        if player_type == "pitcher":
+            w0 = 50
+            k = 0.18
+        else:
+            w0 = 60
+            k = 0.20
+        # Logistic curve
+        prob = 1.0 / (1.0 + np.exp(-k * (projected_career_war - w0)))
+        # Clamp to [0, 0.99]
+        return float(np.clip(prob, 0, 0.99))
+
     def predict_mlb_success(self, db, player_id: int):
         player = db.query(Player).filter(Player.id == player_id).first()
         if not player:
@@ -1019,10 +1032,10 @@ class BaseballMLService:
         ptype = self.get_player_type(player)
         level = getattr(player, 'level', None)
         age = getattr(player, 'age', None) or 24  # fallback if missing
+        is_mlb = (level == 'MLB')
         # --- Career WAR calculation ---
         def get_batting_career_war():
             war = 0.0
-            # Get all MLB seasons for this player from StandardBattingStat
             seasons = set(
                 row.season for row in db.query(StandardBattingStat)
                 .filter(StandardBattingStat.player_id == player_id, StandardBattingStat.level == 'MLB').all()
@@ -1043,16 +1056,17 @@ class BaseballMLService:
                 if getattr(row, 'season', None) in pitching_seasons:
                     war += getattr(row, 'war', 0.0) or 0.0
             return war
-        # --- Debut year ---
         def get_mlb_debut_year():
-            years = []
-            for row in db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id, StandardBattingStat.level == 'MLB').all():
-                if row.season is not None:
-                    years.append(row.season)
-            for row in db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id, StandardPitchingStat.level == 'MLB').all():
-                if row.season is not None:
-                    years.append(row.season)
-            return min(years) if years else None
+            # Find the earliest MLB season in batting or pitching
+            seasons = [row.season for row in db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id, StandardBattingStat.level == 'MLB').all() if row.season]
+            seasons += [row.season for row in db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id, StandardPitchingStat.level == 'MLB').all() if row.season]
+            if seasons:
+                return min(seasons)
+            return None
+        batting_career_war = get_batting_career_war()
+        pitching_career_war = get_pitching_career_war()
+        career_war = batting_career_war + pitching_career_war
+        debut_year = get_mlb_debut_year()
         # --- Similar players for comps ---
         similar = self.get_similar_players(db, player_id, k=5)
         def get_similar_career_wars():
@@ -1084,18 +1098,6 @@ class BaseballMLService:
                         pwar += getattr(row, 'war', 0.0) or 0.0
                 wars.append(bwar + pwar)
             return wars
-        # --- Hall of Fame probability (simple sigmoid on career WAR) ---
-        def hof_prob(war):
-            import math
-            # 60+ WAR is a strong candidate, 80+ is near lock
-            return float(1 / (1 + math.exp(-0.12 * (war - 60))))
-        # --- Main logic ---
-        is_mlb = (level == 'MLB')
-        # Career WAR
-        batting_career_war = get_batting_career_war()
-        pitching_career_war = get_pitching_career_war()
-        career_war = batting_career_war + pitching_career_war
-        debut_year = get_mlb_debut_year()
         comp_wars = get_similar_career_wars()
         # --- ETA calculation ---
         comp_ages = []
@@ -1120,10 +1122,75 @@ class BaseballMLService:
             eta_mlb = age + int(np.mean(comp_ages))
         else:
             eta_mlb = age + 2
-        # Projected career WAR: average of comps
-        projected_career_war = float(np.mean(comp_wars)) if comp_wars else 2.0
+        # Projected career WAR: blended approach considering current performance and comps
+        comp_average_war = float(np.mean(comp_wars)) if comp_wars else 2.0
+        
+        # Calculate age-adjusted projection
+        if is_mlb and career_war > 0:
+            # For MLB players with existing WAR, blend current performance with comp projection
+            # Weight current WAR more heavily for younger players, comp average more for older players
+            age_factor = min(1.0, max(0.0, (age - 20) / 15))  # 0 at age 20, 1 at age 35+
+            current_weight = 0.7 * (1 - age_factor)  # Higher weight for younger players
+            comp_weight = 0.3 + (0.4 * age_factor)   # Higher weight for older players
+            
+            # Ensure projection is at least current WAR (can't go backwards)
+            blended_projection = max(
+                career_war,
+                (current_weight * career_war) + (comp_weight * comp_average_war)
+            )
+            
+            # Add future WAR projection based on age and current performance
+            if age < 30:
+                # Younger players: project additional WAR based on current rate and remaining prime years
+                years_in_mlb = 2025 - int(debut_year) if debut_year else 1
+                war_per_year = career_war / years_in_mlb if years_in_mlb > 0 else 2.0
+                remaining_prime_years = max(0, 30 - age)
+                future_war = war_per_year * remaining_prime_years * 0.8  # 80% of current rate for future
+                projected_career_war = career_war + future_war
+            else:
+                # Older players: use blended projection with some future WAR
+                future_war = max(0, (35 - age) * 1.0)  # Conservative future projection
+                projected_career_war = blended_projection + future_war
+        else:
+            # For prospects or players without MLB WAR, use comp average with some upward adjustment
+            projected_career_war = comp_average_war * 1.2  # 20% upward adjustment for prospects
+        
         ceiling = max(comp_wars) if comp_wars else projected_career_war * 1.5
         floor = min(comp_wars) if comp_wars else projected_career_war * 0.5
+        
+        # --- Ceiling/Floor Comparison Labels ---
+        def get_career_outcome_label(war: float) -> str:
+            if war >= 70:
+                return "Hall of Fame Candidate"
+            elif war >= 50:
+                return "All-Star Level"
+            elif war >= 30:
+                return "MLB Regular"
+            elif war >= 15:
+                return "MLB Role Player"
+            elif war >= 5:
+                return "MLB Bench Player"
+            elif war >= 0:
+                return "Quad-A Player"
+            else:
+                return "Minor League Player"
+        
+        ceiling_label = get_career_outcome_label(ceiling)
+        floor_label = get_career_outcome_label(floor)
+        ceiling_comparison = ceiling_label
+        floor_comparison = floor_label
+        if comp_wars and similar:
+            # Find comp with max/min WAR
+            max_idx = comp_wars.index(ceiling)
+            min_idx = comp_wars.index(floor)
+            if 0 <= max_idx < len(similar):
+                ceiling_name = similar[max_idx].get('mlb_player_name')
+                if ceiling_name:
+                    ceiling_comparison = f"{ceiling_label} ({ceiling_name}, {ceiling:.1f} WAR)"
+            if 0 <= min_idx < len(similar):
+                floor_name = similar[min_idx].get('mlb_player_name')
+                if floor_name:
+                    floor_comparison = f"{floor_label} ({floor_name}, {floor:.1f} WAR)"
         # --- Risk factor ---
         spread = ceiling - floor
         risk_factor = "Low"
@@ -1138,18 +1205,35 @@ class BaseballMLService:
             elif level in ("AA",):
                 if risk_factor == "Low":
                     risk_factor = "Medium"
-        return {
-            "career_war": career_war,
-            "batting_career_war": batting_career_war,
-            "pitching_career_war": pitching_career_war,
-            "debut_year": debut_year,
-            "projected_career_war": projected_career_war,
-            "ceiling": ceiling,
-            "floor": floor,
-            "risk_factor": risk_factor,
-            "hof_prob": hof_prob(career_war),
-            "eta_mlb": eta_mlb,
-            "similar": similar
-        }
+        # --- Probability logic ---
+        # Dummy logic for now; replace with your model
+        if is_mlb:
+            hof_prob = self._hof_probability(projected_career_war, ptype)
+            result = {
+                'hall_of_fame_probability': hof_prob,
+                'debut_year': debut_year,
+                'current_career_war': career_war,
+                'projected_career_war': projected_career_war,
+                'ceiling': ceiling,
+                'floor': floor,
+                'ceiling_comparison': ceiling_comparison,
+                'floor_comparison': floor_comparison,
+                'risk_factor': risk_factor,
+                'similar': similar,
+            }
+        else:
+            mlb_debut_prob = 0.7  # Dummy: replace with your model
+            result = {
+                'mlb_debut_probability': mlb_debut_prob,
+                'eta_mlb': eta_mlb,
+                'projected_career_war': projected_career_war,
+                'ceiling': ceiling,
+                'floor': floor,
+                'ceiling_comparison': ceiling_comparison,
+                'floor_comparison': floor_comparison,
+                'risk_factor': risk_factor,
+                'similar': similar,
+            }
+        return result
 
 ml_service = BaseballMLService()

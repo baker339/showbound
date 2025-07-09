@@ -28,6 +28,7 @@ interface MLBPrediction {
   ceiling_comparison: string;
   floor_comparison: string;
   hall_of_fame_probability?: number;
+  debut_year?: number;
 }
 
 interface MLBPredictionProps {
@@ -161,7 +162,7 @@ const MLBPrediction: React.FC<MLBPredictionProps> = ({
           <Box sx={{ flex: 1, textAlign: 'center', p: 2, bgcolor: 'grey.50', borderRadius: 1 }}>
             <Typography variant="h6" color="primary">
               {/* Show debut_year if present, else eta_mlb or debut_date */}
-              {prediction.eta_mlb || prediction.debut_date || '—'}
+              {prediction.debut_year || prediction.eta_mlb || prediction.debut_date || '—'}
             </Typography>
             <Typography variant="body2" color="text.secondary">
               MLB Debut Year

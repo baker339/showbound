@@ -82,6 +82,32 @@ def normalize_team(team_str):
     team_str = team_str.replace(' (minors)', '').replace(' (majors)', '')
     return team_str
 
+def normalize_level(level_str):
+    if not level_str:
+        return None
+    s = str(level_str).strip().upper()
+    if s in ["MAJ", "MAJORS", "MAJOR LEAGUE", "MLB"]:
+        return "MLB"
+    if s in ["AAA", "TRIPLE-A"]:
+        return "AAA"
+    if s in ["AA", "DOUBLE-A"]:
+        return "AA"
+    if s in ["A+", "A-ADVANCED", "HIGH-A"]:
+        return "A+"
+    if s in ["A", "SINGLE-A", "LOW-A"]:
+        return "A"
+    if s in ["RK", "ROOKIE"]:
+        return "Rk"
+    if s in ["INDEPENDENT"]:
+        return "Indy"
+    if s in ["FOREIGN"]:
+        return "Foreign"
+    if s in ["COLLEGE", "NCAA"]:
+        return "NCAA"
+    if s in ["HS", "HIGH SCHOOL"]:
+        return "HS"
+    return s.title()
+
 def main():
     parser = argparse.ArgumentParser(description='Ingest minor league players from URL file')
     parser.add_argument('url_file', help='Path to the URL file (e.g., aaa_player_urls.txt)')
@@ -280,6 +306,14 @@ def main():
                     # Normalize team name
                     if 'team' in filtered and filtered['team']:
                         filtered['team'] = normalize_team(filtered['team'])
+                    
+                    # Set the level for each stat row
+                    level_val = filtered.get('level') or filtered.get('Lev')
+                    if isinstance(level_val, str) and level_val.strip():
+                        norm_level = normalize_level(level_val)
+                        filtered['level'] = norm_level if norm_level else 'MLB'
+                    else:
+                        filtered['level'] = 'MLB'  # fallback
                     
                     # Type conversion for numeric fields
                     for col in Model.__table__.columns:
