@@ -51,30 +51,14 @@ class Player(Base):
     source_url = Column(String)
     bio_json = Column(JSONB)
     # ... add other canonical bio fields as needed
-    # Removed relationships to deleted models
-
-class PlayerBio(Base):
-    __tablename__ = 'player_bio'
-    id = Column(Integer, primary_key=True)
-    player_id = Column(Integer, ForeignKey('players.id'))
-    field_name = Column(String)
-    field_value = Column(String)
-    source_url = Column(String)
-
-class StatTable(Base):
-    __tablename__ = 'stat_tables'
-    id = Column(Integer, primary_key=True)
-    player_id = Column(Integer, ForeignKey('players.id'))
-    caption = Column(String)
-    table_type = Column(String)  # e.g., "batting", "pitching", "fielding"
-    source_url = Column(String)
-
-class StatRow(Base):
-    __tablename__ = 'stat_rows'
-    id = Column(Integer, primary_key=True)
-    stat_table_id = Column(Integer, ForeignKey('stat_tables.id'))
-    row_index = Column(Integer)
-    row_data = Column(JSONB)
+    # Stat table relationships
+    standard_batting_stats = relationship('StandardBattingStat', back_populates='player', cascade="all, delete-orphan")
+    value_batting_stats = relationship('ValueBattingStat', back_populates='player', cascade="all, delete-orphan")
+    advanced_batting_stats = relationship('AdvancedBattingStat', back_populates='player', cascade="all, delete-orphan")
+    standard_pitching_stats = relationship('StandardPitchingStat', back_populates='player', cascade="all, delete-orphan")
+    value_pitching_stats = relationship('ValuePitchingStat', back_populates='player', cascade="all, delete-orphan")
+    advanced_pitching_stats = relationship('AdvancedPitchingStat', back_populates='player', cascade="all, delete-orphan")
+    standard_fielding_stats = relationship('StandardFieldingStat', back_populates='player', cascade="all, delete-orphan")
 
 # --- Batting Stat Tables ---
 class StandardBattingStat(Base):

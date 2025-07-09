@@ -16,10 +16,8 @@ def empty_canonical_tables():
             models.AdvancedBattingStat,
             models.ValueBattingStat,
             models.StandardBattingStat,
-            models.StatRow,
-            models.StatTable,
-            models.PlayerBio,
             models.PlayerFeatures,
+            models.PlayerRatings,
             models.Player,
         ]
         for table in tables:
