@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from database import SessionLocal
-from models import Player, PlayerBio, StatTable, StatRow, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat, PlayerFeatures, PlayerRatings
+from models import Player, PlayerFeatures, PlayerRatings
 from ml_service import ml_service
 import time
 import numpy as np
@@ -25,24 +25,6 @@ def get_player_bio(player_id: int, db: Session = Depends(get_db)):
         'full_name', 'birth_date', 'primary_position', 'positions_raw', 'positions', 'bats', 'throws', 'height', 'weight', 'team', 'source_url']}
     return {"player_id": player_id, "bio": bio_fields}
 
-@router.get("/player/{player_id}/stat_tables")
-def get_player_stat_tables(player_id: int, db: Session = Depends(get_db)):
-    tables = db.query(StatTable).filter(StatTable.player_id == player_id).all()
-    return [{"id": t.id, "caption": t.caption, "table_type": t.table_type, "source_url": t.source_url} for t in tables]
-
-@router.get("/player/{player_id}/stats")
-def get_player_stats(player_id: int, table_type: str = Query(None), db: Session = Depends(get_db)):
-    tables_query = db.query(StatTable).filter(StatTable.player_id == player_id)
-    if table_type:
-        tables_query = tables_query.filter(StatTable.table_type == table_type)
-    tables = tables_query.all()
-    all_rows = []
-    for t in tables:
-        rows = db.query(StatRow).filter(StatRow.stat_table_id == t.id).all()
-        for r in rows:
-            all_rows.append({"stat_table_id": t.id, "caption": t.caption, "table_type": t.table_type, "row_index": r.row_index, "row_data": r.row_data})
-    return all_rows
-
 @router.get("/players/search")
 def search_players(name: str, db: Session = Depends(get_db)):
     players = db.query(Player).filter(Player.full_name.ilike(f"%{name}%")).all()
@@ -61,41 +43,6 @@ def list_players(skip: int = 0, limit: int = 10000, db: Session = Depends(get_db
         "level": p.level
         # Optionally add: 'features': features_cache.get(p.id).normalized_features if p.id in features_cache else None
     } for p in players]
-
-@router.get("/player/{player_id}/standard_batting")
-def get_standard_batting(player_id: int, db: Session = Depends(get_db)):
-    rows = db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id).all()
-    return [row.__dict__ for row in rows]
-
-@router.get("/player/{player_id}/value_batting")
-def get_value_batting(player_id: int, db: Session = Depends(get_db)):
-    rows = db.query(ValueBattingStat).filter(ValueBattingStat.player_id == player_id).all()
-    return [row.__dict__ for row in rows]
-
-@router.get("/player/{player_id}/advanced_batting")
-def get_advanced_batting(player_id: int, db: Session = Depends(get_db)):
-    rows = db.query(AdvancedBattingStat).filter(AdvancedBattingStat.player_id == player_id).all()
-    return [row.__dict__ for row in rows]
-
-@router.get("/player/{player_id}/standard_pitching")
-def get_standard_pitching(player_id: int, db: Session = Depends(get_db)):
-    rows = db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id).all()
-    return [row.__dict__ for row in rows]
-
-@router.get("/player/{player_id}/value_pitching")
-def get_value_pitching(player_id: int, db: Session = Depends(get_db)):
-    rows = db.query(ValuePitchingStat).filter(ValuePitchingStat.player_id == player_id).all()
-    return [row.__dict__ for row in rows]
-
-@router.get("/player/{player_id}/advanced_pitching")
-def get_advanced_pitching(player_id: int, db: Session = Depends(get_db)):
-    rows = db.query(AdvancedPitchingStat).filter(AdvancedPitchingStat.player_id == player_id).all()
-    return [row.__dict__ for row in rows]
-
-@router.get("/player/{player_id}/standard_fielding")
-def get_standard_fielding(player_id: int, db: Session = Depends(get_db)):
-    rows = db.query(StandardFieldingStat).filter(StandardFieldingStat.player_id == player_id).all()
-    return [row.__dict__ for row in rows]
 
 @router.get("/player/{player_id}/ratings")
 def get_player_ratings(player_id: int, db: Session = Depends(get_db)):

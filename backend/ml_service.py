@@ -13,7 +13,7 @@ import logging
 import datetime
 from sklearn.decomposition import PCA
 import models
-from models import Player, PlayerFeatures, StandardBattingStat, ValueBattingStat, AdvancedBattingStat, StandardPitchingStat, ValuePitchingStat, AdvancedPitchingStat, StandardFieldingStat, LevelWeights
+from models import Player, PlayerFeatures, LevelWeights
 import re
 import time
 
@@ -155,8 +155,8 @@ class BaseballMLService:
     
     def _infer_level(self, db, player_id):
         # Try to infer from most recent stat table
-        bat = db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id).order_by(StandardBattingStat.season.desc()).first()
-        pit = db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id).order_by(StandardPitchingStat.season.desc()).first()
+        bat = db.query(LevelWeights).filter(LevelWeights.player_id == player_id).order_by(LevelWeights.season.desc()).first()
+        pit = db.query(LevelWeights).filter(LevelWeights.player_id == player_id).order_by(LevelWeights.season.desc()).first()
         stat = bat if (bat and (not pit or bat.season >= pit.season)) else pit
         if stat and hasattr(stat, 'team') and stat.team:
             team = stat.team.lower()
@@ -215,9 +215,9 @@ class BaseballMLService:
                     continue
                     
                 # Get latest batting stats
-                bat_stats = db.query(StandardBattingStat).filter(
-                    StandardBattingStat.player_id == player.id
-                ).order_by(StandardBattingStat.season.desc()).first()
+                bat_stats = db.query(LevelWeights).filter(
+                    LevelWeights.player_id == player.id
+                ).order_by(LevelWeights.season.desc()).first()
                 
                 if bat_stats:
                     # Collect key batting metrics
@@ -236,9 +236,9 @@ class BaseballMLService:
                         level_stats[player_level]['batting'].append(stats_dict)
                 
                 # Get latest pitching stats
-                pit_stats = db.query(StandardPitchingStat).filter(
-                    StandardPitchingStat.player_id == player.id
-                ).order_by(StandardPitchingStat.season.desc()).first()
+                pit_stats = db.query(LevelWeights).filter(
+                    LevelWeights.player_id == player.id
+                ).order_by(LevelWeights.season.desc()).first()
                 
                 if pit_stats:
                     # Collect key pitching metrics
@@ -396,57 +396,57 @@ class BaseballMLService:
                     return mean_val * level_factor
             # Build feature lists
             hitting_feats = [
-                aggregate_feature(StandardBattingStat, 'ba', is_percentage=True),
-                aggregate_feature(StandardBattingStat, 'obp', is_percentage=True),
-                aggregate_feature(AdvancedBattingStat, 'ev'),
-                aggregate_feature(AdvancedBattingStat, 'hardh_pct', is_percentage=True),
-                aggregate_feature(AdvancedBattingStat, 'ld_pct', is_percentage=True),
-                aggregate_feature(StandardBattingStat, 'slg', is_percentage=True),
-                aggregate_feature(AdvancedBattingStat, 'iso', is_percentage=True),
-                aggregate_feature(AdvancedBattingStat, 'barrel_pct', is_percentage=True),
-                aggregate_feature(StandardBattingStat, 'hr'),
-                aggregate_feature(AdvancedBattingStat, 'bb_pct', is_percentage=True),
-                aggregate_feature(AdvancedBattingStat, 'so_pct', is_percentage=True),
-                aggregate_feature(StandardBattingStat, 'bb'),
-                aggregate_feature(StandardBattingStat, 'so'),
-                aggregate_feature(StandardBattingStat, 'sb'),
-                aggregate_feature(ValueBattingStat, 'rbaser'),
+                aggregate_feature(LevelWeights, 'ba', is_percentage=True),
+                aggregate_feature(LevelWeights, 'obp', is_percentage=True),
+                aggregate_feature(LevelWeights, 'ev'),
+                aggregate_feature(LevelWeights, 'hardh_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'ld_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'slg', is_percentage=True),
+                aggregate_feature(LevelWeights, 'iso', is_percentage=True),
+                aggregate_feature(LevelWeights, 'barrel_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'hr'),
+                aggregate_feature(LevelWeights, 'bb_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'so_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'bb'),
+                aggregate_feature(LevelWeights, 'so'),
+                aggregate_feature(LevelWeights, 'sb'),
+                aggregate_feature(LevelWeights, 'rbaser'),
             ]
             fielding_feats = [
-                aggregate_feature(StandardFieldingStat, 'fld_pct', is_percentage=True),
-                aggregate_feature(StandardFieldingStat, 'rdrs'),
-                aggregate_feature(StandardFieldingStat, 'rtot'),
-                aggregate_feature(StandardFieldingStat, 'a'),
-                aggregate_feature(StandardFieldingStat, 'dp'),
+                aggregate_feature(LevelWeights, 'fld_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'rdrs'),
+                aggregate_feature(LevelWeights, 'rtot'),
+                aggregate_feature(LevelWeights, 'a'),
+                aggregate_feature(LevelWeights, 'dp'),
             ]
             pitching_feats = [
-                aggregate_feature(AdvancedPitchingStat, 'k_pct', is_percentage=True),
-                aggregate_feature(AdvancedPitchingStat, 'bb_pct', is_percentage=True),
-                aggregate_feature(AdvancedPitchingStat, 'hr_pct', is_percentage=True),
-                aggregate_feature(StandardPitchingStat, 'era'),
-                aggregate_feature(StandardPitchingStat, 'fip'),
-                aggregate_feature(StandardPitchingStat, 'whip'),
-                aggregate_feature(StandardPitchingStat, 'era_plus'),
-                aggregate_feature(ValuePitchingStat, 'war'),
-                aggregate_feature(ValuePitchingStat, 'waa'),
-                aggregate_feature(ValuePitchingStat, 'raa'),
-                aggregate_feature(StandardPitchingStat, 'so'),
-                aggregate_feature(StandardPitchingStat, 'bb'),
-                aggregate_feature(StandardPitchingStat, 'ip'),
-                aggregate_feature(StandardPitchingStat, 'gs'),
-                aggregate_feature(StandardPitchingStat, 'so9'),
-                aggregate_feature(StandardPitchingStat, 'bb9'),
-                aggregate_feature(StandardPitchingStat, 'hr9'),
-                aggregate_feature(StandardPitchingStat, 'h9'),
-                aggregate_feature(AdvancedPitchingStat, 'babip', is_percentage=True),
-                aggregate_feature(AdvancedPitchingStat, 'lob_pct', is_percentage=True),
-                aggregate_feature(AdvancedPitchingStat, 'era_minus'),
-                aggregate_feature(AdvancedPitchingStat, 'fip_minus'),
-                aggregate_feature(AdvancedPitchingStat, 'xfip_minus'),
-                aggregate_feature(AdvancedPitchingStat, 'siera'),
-                aggregate_feature(ValuePitchingStat, 'wpa'),
-                aggregate_feature(ValuePitchingStat, 're24'),
-                aggregate_feature(ValuePitchingStat, 'cwpa'),
+                aggregate_feature(LevelWeights, 'k_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'bb_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'hr_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'era'),
+                aggregate_feature(LevelWeights, 'fip'),
+                aggregate_feature(LevelWeights, 'whip'),
+                aggregate_feature(LevelWeights, 'era_plus'),
+                aggregate_feature(LevelWeights, 'war'),
+                aggregate_feature(LevelWeights, 'waa'),
+                aggregate_feature(LevelWeights, 'raa'),
+                aggregate_feature(LevelWeights, 'so'),
+                aggregate_feature(LevelWeights, 'bb'),
+                aggregate_feature(LevelWeights, 'ip'),
+                aggregate_feature(LevelWeights, 'gs'),
+                aggregate_feature(LevelWeights, 'so9'),
+                aggregate_feature(LevelWeights, 'bb9'),
+                aggregate_feature(LevelWeights, 'hr9'),
+                aggregate_feature(LevelWeights, 'h9'),
+                aggregate_feature(LevelWeights, 'babip', is_percentage=True),
+                aggregate_feature(LevelWeights, 'lob_pct', is_percentage=True),
+                aggregate_feature(LevelWeights, 'era_minus'),
+                aggregate_feature(LevelWeights, 'fip_minus'),
+                aggregate_feature(LevelWeights, 'xfip_minus'),
+                aggregate_feature(LevelWeights, 'siera'),
+                aggregate_feature(LevelWeights, 'wpa'),
+                aggregate_feature(LevelWeights, 're24'),
+                aggregate_feature(LevelWeights, 'cwpa'),
             ]
             # Combine features based on mode
             if mode == 'hitting':
@@ -739,9 +739,9 @@ class BaseballMLService:
 
     def _get_recent_overalls(self, db, player_id: int, mode: str, n_seasons: int = 3) -> list:
         if mode == 'hitting':
-            stats = db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id).order_by(StandardBattingStat.season.asc()).all()
+            stats = db.query(LevelWeights).filter(LevelWeights.player_id == player_id).order_by(LevelWeights.season.asc()).all()
         elif mode == 'pitching':
-            stats = db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id).order_by(StandardPitchingStat.season.asc()).all()
+            stats = db.query(LevelWeights).filter(LevelWeights.player_id == player_id).order_by(LevelWeights.season.asc()).all()
         else:
             return []
         overalls = []
@@ -783,9 +783,9 @@ class BaseballMLService:
         Fetch the last n_seasons' (season, overall) for a player (batting or pitching), oldest to newest.
         """
         if mode == 'hitting':
-            stats = db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id).order_by(StandardBattingStat.season.asc()).all()
+            stats = db.query(LevelWeights).filter(LevelWeights.player_id == player_id).order_by(LevelWeights.season.asc()).all()
         elif mode == 'pitching':
-            stats = db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id).order_by(StandardPitchingStat.season.asc()).all()
+            stats = db.query(LevelWeights).filter(LevelWeights.player_id == player_id).order_by(LevelWeights.season.asc()).all()
         else:
             return []
         results = []
@@ -1023,32 +1023,32 @@ class BaseballMLService:
             war = 0.0
             # Get all seasons for this player (assume all are MLB)
             seasons = set(
-                row.season for row in db.query(StandardBattingStat)
-                .filter(StandardBattingStat.player_id == player_id).all()
+                row.season for row in db.query(LevelWeights)
+                .filter(LevelWeights.player_id == player_id).all()
                 if row.season is not None
             )
-            for row in db.query(ValueBattingStat).filter(ValueBattingStat.player_id == player_id).all():
+            for row in db.query(LevelWeights).filter(LevelWeights.player_id == player_id).all():
                 if getattr(row, 'season', None) in seasons:
                     war += getattr(row, 'war', 0.0) or 0.0
             return war
         def get_pitching_career_war():
             war = 0.0
             pitching_seasons = set(
-                row.season for row in db.query(StandardPitchingStat)
-                .filter(StandardPitchingStat.player_id == player_id).all()
+                row.season for row in db.query(LevelWeights)
+                .filter(LevelWeights.player_id == player_id).all()
                 if row.season is not None
             )
-            for row in db.query(ValuePitchingStat).filter(ValuePitchingStat.player_id == player_id).all():
+            for row in db.query(LevelWeights).filter(LevelWeights.player_id == player_id).all():
                 if getattr(row, 'season', None) in pitching_seasons:
                     war += getattr(row, 'war', 0.0) or 0.0
             return war
         # --- Debut year ---
         def get_mlb_debut_year():
             years = []
-            for row in db.query(ValueBattingStat).filter(ValueBattingStat.player_id == player_id).all():
+            for row in db.query(LevelWeights).filter(LevelWeights.player_id == player_id).all():
                 if row.season is not None:
                     years.append(row.season)
-            for row in db.query(ValuePitchingStat).filter(ValuePitchingStat.player_id == player_id).all():
+            for row in db.query(LevelWeights).filter(LevelWeights.player_id == player_id).all():
                 if row.season is not None:
                     years.append(row.season)
             return min(years) if years else None
@@ -1063,22 +1063,22 @@ class BaseballMLService:
                 # For each comp, sum MLB WAR (batting + pitching) using MLB seasons only
                 # Batting
                 mlb_bat_seasons = set(
-                    row.season for row in db.query(StandardBattingStat)
-                    .filter(StandardBattingStat.player_id == comp_id).all()
+                    row.season for row in db.query(LevelWeights)
+                    .filter(LevelWeights.player_id == comp_id).all()
                     if row.season is not None
                 )
                 bwar = 0.0
-                for row in db.query(ValueBattingStat).filter(ValueBattingStat.player_id == comp_id).all():
+                for row in db.query(LevelWeights).filter(LevelWeights.player_id == comp_id).all():
                     if getattr(row, 'season', None) in mlb_bat_seasons:
                         bwar += getattr(row, 'war', 0.0) or 0.0
                 # Pitching
                 mlb_pit_seasons = set(
-                    row.season for row in db.query(StandardPitchingStat)
-                    .filter(StandardPitchingStat.player_id == comp_id).all()
+                    row.season for row in db.query(LevelWeights)
+                    .filter(LevelWeights.player_id == comp_id).all()
                     if row.season is not None
                 )
                 pwar = 0.0
-                for row in db.query(ValuePitchingStat).filter(ValuePitchingStat.player_id == comp_id).all():
+                for row in db.query(LevelWeights).filter(LevelWeights.player_id == comp_id).all():
                     if getattr(row, 'season', None) in mlb_pit_seasons:
                         pwar += getattr(row, 'war', 0.0) or 0.0
                 wars.append(bwar + pwar)
@@ -1155,11 +1155,11 @@ class BaseballMLService:
             if not comp_id:
                 continue
             comp_debut = None
-            for row in db.query(StandardBattingStat).filter(StandardBattingStat.player_id == comp_id, StandardBattingStat.level == 'MLB').all():
+            for row in db.query(LevelWeights).filter(LevelWeights.player_id == comp_id, LevelWeights.level == 'MLB').all():
                 if row.season:
                     comp_debut = row.season
                     break
-            for row in db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == comp_id, StandardPitchingStat.level == 'MLB').all():
+            for row in db.query(LevelWeights).filter(LevelWeights.player_id == comp_id, LevelWeights.level == 'MLB').all():
                 if row.season:
                     comp_debut = row.season
                     break
