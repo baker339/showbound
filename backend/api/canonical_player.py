@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from database import SessionLocal
-from models import Player, PlayerFeatures, PlayerRatings
+from models import Player, PlayerFeatures, PlayerRatings, StandardBattingStat, StandardPitchingStat, StandardFieldingStat
 from ml_service import ml_service
 import time
 import numpy as np
@@ -15,6 +15,9 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def model_to_dict(obj):
+    return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
 @router.get("/player/{player_id}/bio")
 def get_player_bio(player_id: int, db: Session = Depends(get_db)):
@@ -215,4 +218,19 @@ def populate_player_ratings_and_features(db: Session = Depends(get_db)):
             count += 1
     db.commit()
     ml_service.refresh_feature_cache(db)
-    return {"status": "success", "players_created": count, "players_updated": updated} 
+    return {"status": "success", "players_created": count, "players_updated": updated}
+
+@router.get("/player/{player_id}/standard_batting")
+def get_standard_batting(player_id: int, db: Session = Depends(get_db)):
+    stats = db.query(StandardBattingStat).filter(StandardBattingStat.player_id == player_id).all()
+    return [model_to_dict(stat) for stat in stats]
+
+@router.get("/player/{player_id}/standard_pitching")
+def get_standard_pitching(player_id: int, db: Session = Depends(get_db)):
+    stats = db.query(StandardPitchingStat).filter(StandardPitchingStat.player_id == player_id).all()
+    return [model_to_dict(stat) for stat in stats]
+
+@router.get("/player/{player_id}/standard_fielding")
+def get_standard_fielding(player_id: int, db: Session = Depends(get_db)):
+    stats = db.query(StandardFieldingStat).filter(StandardFieldingStat.player_id == player_id).all()
+    return [model_to_dict(stat) for stat in stats] 
