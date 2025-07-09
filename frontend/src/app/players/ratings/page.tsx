@@ -66,6 +66,15 @@ const responsiveStyles = {
   },
 };
 
+// Add color coding function (copied from PlayerCard)
+const getRatingColor = (rating: number) => {
+  if (rating >= 90) return '#4CAF50'; // Green for elite
+  if (rating >= 80) return '#8BC34A'; // Light green for very good
+  if (rating >= 70) return '#FFC107'; // Yellow for good
+  if (rating >= 60) return '#FF9800'; // Orange for average
+  return '#F44336'; // Red for below average
+};
+
 export default function AllPlayersRatingsPage() {
   const [players, setPlayers] = useState<PlayerRating[]>([]);
   const [search, setSearch] = useState("");
@@ -190,7 +199,20 @@ export default function AllPlayersRatingsPage() {
                  p.player_type === 'position_player' ? 'Position Player' :
                  p.player_type === 'two_way' ? 'Two-Way' : p.player_type}
               </td>
-              <td style={{ ...responsiveStyles.td, ...(isMobile ? responsiveStyles.tdMobile : {}) }}>{p.overall_rating.toFixed(1)}</td>
+              <td
+                style={{
+                  ...responsiveStyles.td,
+                  ...(isMobile ? responsiveStyles.tdMobile : {}),
+                  color: '#fff',
+                  background: getRatingColor(p.overall_rating),
+                  fontWeight: 700,
+                  borderRadius: 4,
+                  textAlign: 'center',
+                  minWidth: 60,
+                }}
+              >
+                {p.overall_rating.toFixed(1)}
+              </td>
               <td style={{ ...responsiveStyles.td, ...(isMobile ? responsiveStyles.tdMobile : {}) }}>{p.potential_rating.toFixed(1)}</td>
             </tr>
           ))}
